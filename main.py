@@ -346,14 +346,14 @@ def create_general_frame(frame, output_width, output_height):
     # Crop center to aspect ratio
     bg_scale = output_height / orig_h
     bg_w = int(orig_w * bg_scale)
-    bg_resized = cv2.resize(frame, (bg_w, output_height), interpolation=cv2.INTER_LANCZOS4)
+    bg_resized = cv2.resize(frame, (bg_w, output_height))
     
     # Crop center of background
     start_x = (bg_w - output_width) // 2
     if start_x < 0: start_x = 0
     background = bg_resized[:, start_x:start_x+output_width]
     if background.shape[1] != output_width:
-        background = cv2.resize(background, (output_width, output_height), interpolation=cv2.INTER_LANCZOS4)
+        background = cv2.resize(background, (output_width, output_height))
         
     # Blur background
     background = cv2.GaussianBlur(background, (51, 51), 0)
@@ -361,7 +361,7 @@ def create_general_frame(frame, output_width, output_height):
     # 2. Foreground (Fit Width)
     scale = output_width / orig_w
     fg_h = int(orig_h * scale)
-    foreground = cv2.resize(frame, (output_width, fg_h), interpolation=cv2.INTER_LANCZOS4)
+    foreground = cv2.resize(frame, (output_width, fg_h))
     
     # 3. Overlay
     y_offset = (output_height - fg_h) // 2
@@ -609,7 +609,7 @@ def process_video_to_vertical(input_video, final_output_video):
     print("\n   🧠 Step 2: Preparing Active Tracking...")
     original_width, original_height = get_video_resolution(input_video)
     
-    # Enforce standard vertical 1080p output (1080x1920) for high quality
+    # Enforce standard vertical 1080p output (1080x1920) for consistency
     OUTPUT_WIDTH = 1080
     OUTPUT_HEIGHT = 1920
 
@@ -626,9 +626,8 @@ def process_video_to_vertical(input_video, final_output_video):
     command = [
         'ffmpeg', '-y', '-f', 'rawvideo', '-vcodec', 'rawvideo',
         '-s', f'{OUTPUT_WIDTH}x{OUTPUT_HEIGHT}', '-pix_fmt', 'bgr24',
-        '-r', str(fps), '-i', '-',
-        '-vf', 'unsharp=5:5:1.5,eq=brightness=0.06:contrast=1.1:saturation=1.15',
-        '-c:v', 'libx264', '-preset', 'medium', '-crf', '18', '-an', temp_video_output
+        '-r', str(fps), '-i', '-', '-c:v', 'libx264',
+        '-preset', 'fast', '-crf', '23', '-an', temp_video_output
     ]
 
     ffmpeg_process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -693,9 +692,9 @@ def process_video_to_vertical(input_video, final_output_video):
                 # Crop
                 if y2 > y1 and x2 > x1:
                     cropped = frame[y1:y2, x1:x2]
-                    output_frame = cv2.resize(cropped, (OUTPUT_WIDTH, OUTPUT_HEIGHT), interpolation=cv2.INTER_LANCZOS4)
+                    output_frame = cv2.resize(cropped, (OUTPUT_WIDTH, OUTPUT_HEIGHT))
                 else:
-                    output_frame = cv2.resize(frame, (OUTPUT_WIDTH, OUTPUT_HEIGHT), interpolation=cv2.INTER_LANCZOS4)
+                    output_frame = cv2.resize(frame, (OUTPUT_WIDTH, OUTPUT_HEIGHT))
 
             ffmpeg_process.stdin.write(output_frame.tobytes())
             frame_number += 1
@@ -992,7 +991,7 @@ if __name__ == '__main__':
                     '-ss', str(start), 
                     '-to', str(end), 
                     '-i', input_video,
-                    '-c:v', 'libx264', '-crf', '12', '-preset', 'ultrafast',
+                    '-c:v', 'libx264', '-crf', '18', '-preset', 'fast',
                     '-c:a', 'aac',
                     clip_temp_path
                 ]

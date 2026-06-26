@@ -9,6 +9,13 @@ services:
       - /app/__pycache__
       - ./output:/app/output
     restart: unless-stopped
+    depends_on:
+      - bgutil
+
+  bgutil:
+    image: brainicism/bgutil-ytdlp-pot-provider:latest
+    container_name: openshorts-bgutil
+    restart: unless-stopped
 
   frontend:
     build: ./dashboard

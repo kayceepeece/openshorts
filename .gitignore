@@ -18,6 +18,7 @@ uploads/
 downloads/
 videos/
 output/
+data/
 
 # OS / IDE
 .DS_Store
@@ -26,6 +27,7 @@ output/
 
 # Secrets
 .env
+youtube_cookies.txt
 
 # Generated metadata
 *_metadata.json
@@ -33,10 +35,16 @@ output/
 # Cache dirs
 .cache/
 .config/
-# Multi-agent Skills
+
+# Multi-agent Skills / AI tool artifacts
 .agents/
 .agent/
 .claude/
+.hermes/
+.kimchi/
 skills/
 skills-lock.json
+
+# Project-level documentation (gitignored — lives outside the public history)
+md_docs/
 

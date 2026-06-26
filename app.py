@@ -7,6 +7,7 @@ import shutil
 import glob
 import time
 import asyncio
+import sqlite3
 from dotenv import load_dotenv
 from typing import Dict, Optional, List
 from contextlib import asynccontextmanager
@@ -22,19 +23,578 @@ load_dotenv()
 # Constants
 UPLOAD_DIR = "uploads"
 OUTPUT_DIR = "output"
+DB_PATH = "data/openshorts.db"
 os.makedirs(UPLOAD_DIR, exist_ok=True)
 os.makedirs(OUTPUT_DIR, exist_ok=True)
+os.makedirs("data", exist_ok=True)
 
 # Configuration
 # Default to 1 if not set, but user can set higher for powerful servers
 MAX_CONCURRENT_JOBS = int(os.environ.get("MAX_CONCURRENT_JOBS", "5"))
 MAX_FILE_SIZE_MB = 2048  # 2GB limit
-JOB_RETENTION_SECONDS = 3600  # 1 hour retention
+JOB_RETENTION_SECONDS = 7 * 24 * 3600  # 7 days retention
 DISABLE_YOUTUBE_URL = os.environ.get("DISABLE_YOUTUBE_URL", "false").lower() in ("1", "true", "yes")
 
-# Application State
+# ── Database ──────────────────────────────────────────────────────────────
+
+def _db_conn():
+    """Get a SQLite connection (row_factory enabled)."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+def init_db():
+    """Create the projects, videos, and clip_jobs tables if they don't exist.
+    Also migrates old jobs data if present."""
+    conn = _db_conn()
+    conn.execute("PRAGMA foreign_keys = ON;")
+    
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS projects (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            dossier_enabled BOOLEAN DEFAULT 0,
+            retention_days INTEGER DEFAULT 7,
+            content_type TEXT DEFAULT 'general',
+            custom_instructions TEXT,
+            created_at REAL
+        )
+    """)
+    
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS videos (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            source_type TEXT,
+            source_url TEXT,
+            source_filename TEXT,
+            status TEXT,
+            transcript_json TEXT,
+            dossier_text TEXT,
+            duration_seconds REAL,
+            created_at REAL,
+            completed_at REAL,
+            error TEXT,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        )
+    """)
+    
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS clip_jobs (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            video_ids TEXT NOT NULL,
+            clip_count INTEGER DEFAULT 0,
+            status TEXT,
+            result_json TEXT,
+            created_at REAL,
+            completed_at REAL,
+            error TEXT,
+            FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+        )
+    """)
+    
+    # Add new columns to existing projects tables (safe migration for existing deployments)
+    for col_def in [
+        ("content_type", "TEXT DEFAULT 'general'"),
+        ("custom_instructions", "TEXT"),
+    ]:
+        col_name, col_type = col_def
+        try:
+            conn.execute(f"ALTER TABLE projects ADD COLUMN {col_name} {col_type}")
+            print(f"📦 Migrated projects table: added column '{col_name}'")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
+    # Check if we need to migrate from old 'jobs' table
+    cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='jobs'")
+    has_old_jobs = cursor.fetchone()
+    if has_old_jobs:
+        print("📦 Found old 'jobs' table. Migrating data...")
+        default_project_id = "default-project"
+        
+        # Insert default project
+        existing_project = conn.execute("SELECT id FROM projects WHERE id = ?", (default_project_id,)).fetchone()
+        if not existing_project:
+            conn.execute(
+                "INSERT INTO projects (id, name, dossier_enabled, retention_days, created_at) VALUES (?, ?, ?, ?, ?)",
+                (default_project_id, "Default Project", 0, 7, time.time())
+            )
+            
+        old_jobs = conn.execute("SELECT * FROM jobs").fetchall()
+        for job in old_jobs:
+            job_dict = dict(job)
+            job_id = job_dict["id"]
+            
+            # Map to videos table
+            video_exists = conn.execute("SELECT id FROM videos WHERE id = ?", (job_id,)).fetchone()
+            if not video_exists:
+                video_status = 'ready' if job_dict['status'] == 'completed' else ('failed' if job_dict['status'] == 'failed' else 'analyzing')
+                transcript_json = None
+                dossier_text = None
+                
+                # Try to read transcript from result_json first
+                if job_dict.get('result_json'):
+                    try:
+                        res = json.loads(job_dict['result_json'])
+                        if isinstance(res, dict) and 'transcript' in res:
+                            transcript_json = json.dumps(res['transcript'])
+                    except Exception:
+                        pass
+                
+                # If not in result_json, try to read from disk
+                if not transcript_json:
+                    job_output_dir = os.path.join(OUTPUT_DIR, job_id)
+                    transcript_path = os.path.join(job_output_dir, "transcript.json")
+                    if os.path.exists(transcript_path):
+                        try:
+                            with open(transcript_path, 'r') as f:
+                                transcript_json = f.read()
+                        except Exception:
+                            pass
+                
+                # Try to read dossier from disk
+                job_output_dir = os.path.join(OUTPUT_DIR, job_id)
+                dossier_path = os.path.join(job_output_dir, "dossier.md")
+                if os.path.exists(dossier_path):
+                    try:
+                        with open(dossier_path, 'r') as f:
+                            dossier_text = f.read()
+                    except Exception:
+                        pass
+                
+                conn.execute("""
+                    INSERT INTO videos (id, project_id, source_type, source_url, source_filename, status, transcript_json, dossier_text, created_at, completed_at, error)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    job_id,
+                    default_project_id,
+                    job_dict.get('source_type'),
+                    job_dict.get('source_url'),
+                    job_dict.get('source_filename'),
+                    video_status,
+                    transcript_json,
+                    dossier_text,
+                    job_dict.get('created_at'),
+                    job_dict.get('completed_at'),
+                    job_dict.get('error')
+                ))
+                
+            # Map to clip_jobs table
+            clip_job_exists = conn.execute("SELECT id FROM clip_jobs WHERE id = ?", (job_id,)).fetchone()
+            if not clip_job_exists:
+                conn.execute("""
+                    INSERT INTO clip_jobs (id, project_id, video_ids, clip_count, status, result_json, created_at, completed_at, error)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    job_id,
+                    default_project_id,
+                    json.dumps([job_id]),
+                    job_dict.get('clip_count', 0),
+                    job_dict.get('status'),
+                    job_dict.get('result_json'),
+                    job_dict.get('created_at'),
+                    job_dict.get('completed_at'),
+                    job_dict.get('error')
+                ))
+        
+        conn.execute("ALTER TABLE jobs RENAME TO old_jobs_backup")
+        print("📦 Migration complete. Old 'jobs' table renamed to 'old_jobs_backup'.")
+        
+    conn.commit()
+    conn.close()
+    print("📦 Database initialized.")
+
+def save_job(job_id: str, source_type: str = None, source_url: str = None,
+             source_filename: str = None, status: str = None, created_at: float = None,
+             completed_at: float = None, clip_count: int = None, result_json: str = None,
+             error: str = None):
+    # This is a compatibility wrapper.
+    # It updates whichever table contains job_id.
+    conn = _db_conn()
+    is_clip = conn.execute("SELECT id FROM clip_jobs WHERE id = ?", (job_id,)).fetchone()
+    if is_clip:
+        updates = []
+        params = []
+        for field, value in [("status", status), ("completed_at", completed_at),
+                             ("clip_count", clip_count), ("result_json", result_json),
+                             ("error", error)]:
+            if value is not None:
+                updates.append(f"{field} = ?")
+                params.append(value)
+        if updates:
+            params.append(job_id)
+            conn.execute(f"UPDATE clip_jobs SET {', '.join(updates)} WHERE id = ?", params)
+    else:
+        is_video = conn.execute("SELECT id FROM videos WHERE id = ?", (job_id,)).fetchone()
+        if is_video:
+            updates = []
+            params = []
+            for field, value in [("status", status), ("completed_at", completed_at),
+                                 ("error", error)]:
+                if value is not None:
+                    if field == "status" and value == "completed":
+                        value = "ready"
+                    updates.append(f"{field} = ?")
+                    params.append(value)
+            if updates:
+                params.append(job_id)
+                conn.execute(f"UPDATE videos SET {', '.join(updates)} WHERE id = ?", params)
+    conn.commit()
+    conn.close()
+
+def get_job(job_id: str) -> Optional[dict]:
+    # Check clip_jobs first
+    conn = _db_conn()
+    row = conn.execute("SELECT * FROM clip_jobs WHERE id = ?", (job_id,)).fetchone()
+    if row:
+        conn.close()
+        r = dict(row)
+        try:
+            vids = json.loads(r["video_ids"])
+            if vids:
+                conn2 = _db_conn()
+                vrow = conn2.execute("SELECT source_type, source_url, source_filename FROM videos WHERE id = ?", (vids[0],)).fetchone()
+                conn2.close()
+                if vrow:
+                    vdict = dict(vrow)
+                    r.update(vdict)
+        except Exception:
+            pass
+        return r
+        
+    # Check videos
+    row = conn.execute("SELECT * FROM videos WHERE id = ?", (job_id,)).fetchone()
+    if row:
+        conn.close()
+        r = dict(row)
+        if r["status"] == "ready":
+            r["status"] = "completed"
+        return r
+        
+    conn.close()
+    return None
+
+def list_jobs(limit: int = 50, offset: int = 0) -> list:
+    conn = _db_conn()
+    rows = conn.execute("SELECT * FROM clip_jobs ORDER BY created_at DESC LIMIT ? OFFSET ?", (limit, offset)).fetchall()
+    conn.close()
+    res = []
+    for row in rows:
+        r = dict(row)
+        try:
+            vids = json.loads(r["video_ids"])
+            if vids:
+                conn2 = _db_conn()
+                vrow = conn2.execute("SELECT source_type, source_url, source_filename FROM videos WHERE id = ?", (vids[0],)).fetchone()
+                conn2.close()
+                if vrow:
+                    vdict = dict(vrow)
+                    r.update(vdict)
+        except Exception:
+            pass
+        res.append(r)
+    return res
+
+# ── Projects, Videos, Clip Jobs CRUD Helper Functions ─────────────────────
+
+def create_project(name: str, dossier_enabled: bool, retention_days: int, content_type: str = 'general', custom_instructions: Optional[str] = None) -> dict:
+    project_id = str(uuid.uuid4())
+    conn = _db_conn()
+    conn.execute(
+        "INSERT INTO projects (id, name, dossier_enabled, retention_days, content_type, custom_instructions, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (project_id, name, int(dossier_enabled), retention_days, content_type, custom_instructions, time.time())
+    )
+    conn.commit()
+    conn.close()
+    return get_project(project_id)
+
+def list_projects() -> list:
+    conn = _db_conn()
+    rows = conn.execute("""
+        SELECT p.*, 
+               (SELECT COUNT(*) FROM videos v WHERE v.project_id = p.id) as video_count,
+               (SELECT COUNT(*) FROM clip_jobs c WHERE c.project_id = p.id) as clip_count
+        FROM projects p
+        ORDER BY p.created_at DESC
+    """).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def get_project(project_id: str) -> Optional[dict]:
+    conn = _db_conn()
+    row = conn.execute("""
+        SELECT p.*, 
+               (SELECT COUNT(*) FROM videos v WHERE v.project_id = p.id) as video_count,
+               (SELECT COUNT(*) FROM clip_jobs c WHERE c.project_id = p.id) as clip_count
+        FROM projects p
+        WHERE p.id = ?
+    """, (project_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def update_project(project_id: str, **fields) -> Optional[dict]:
+    conn = _db_conn()
+    updates = []
+    params = []
+    for field, val in fields.items():
+        if field in ("name", "dossier_enabled", "retention_days", "content_type", "custom_instructions"):
+            updates.append(f"{field} = ?")
+            if field == "dossier_enabled":
+                params.append(int(val))
+            else:
+                params.append(val)
+    if updates:
+        params.append(project_id)
+        conn.execute(f"UPDATE projects SET {', '.join(updates)} WHERE id = ?", params)
+        conn.commit()
+    conn.close()
+    return get_project(project_id)
+
+def delete_project(project_id: str):
+    vids = list_videos(project_id)
+    for vid in vids:
+        delete_video_files(vid["id"])
+    cjs = list_clip_jobs(project_id)
+    for cj in cjs:
+        delete_clip_job_files(cj["id"])
+        
+    conn = _db_conn()
+    conn.execute("PRAGMA foreign_keys = ON;")
+    conn.execute("DELETE FROM projects WHERE id = ?", (project_id,))
+    conn.commit()
+    conn.close()
+
+def create_video(project_id: str, source_type: str, source_url: Optional[str], source_filename: Optional[str]) -> dict:
+    video_id = str(uuid.uuid4())
+    conn = _db_conn()
+    conn.execute("""
+        INSERT INTO videos (id, project_id, source_type, source_url, source_filename, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (video_id, project_id, source_type, source_url, source_filename, "analyzing", time.time()))
+    conn.commit()
+    conn.close()
+    return get_video(video_id)
+
+def list_videos(project_id: str) -> list:
+    conn = _db_conn()
+    rows = conn.execute("SELECT * FROM videos WHERE project_id = ? ORDER BY created_at DESC", (project_id,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def get_video(video_id: str) -> Optional[dict]:
+    conn = _db_conn()
+    row = conn.execute("SELECT * FROM videos WHERE id = ?", (video_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def update_video(video_id: str, **fields) -> Optional[dict]:
+    conn = _db_conn()
+    updates = []
+    params = []
+    for field, val in fields.items():
+        if field in ("status", "transcript_json", "dossier_text", "duration_seconds", "completed_at", "error"):
+            updates.append(f"{field} = ?")
+            params.append(val)
+    if updates:
+        params.append(video_id)
+        conn.execute(f"UPDATE videos SET {', '.join(updates)} WHERE id = ?", params)
+        conn.commit()
+    conn.close()
+    return get_video(video_id)
+
+def delete_video_files(video_id: str):
+    video_dir = os.path.join(OUTPUT_DIR, video_id)
+    if os.path.isdir(video_dir):
+        shutil.rmtree(video_dir, ignore_errors=True)
+    for f in os.listdir(UPLOAD_DIR):
+        if f.startswith(video_id):
+            try:
+                os.remove(os.path.join(UPLOAD_DIR, f))
+            except Exception:
+                pass
+
+def delete_video(video_id: str):
+    delete_video_files(video_id)
+    conn = _db_conn()
+    conn.execute("PRAGMA foreign_keys = ON;")
+    conn.execute("DELETE FROM videos WHERE id = ?", (video_id,))
+    conn.commit()
+    conn.close()
+
+def create_clip_job(project_id: str, video_ids: list) -> dict:
+    clip_job_id = str(uuid.uuid4())
+    conn = _db_conn()
+    conn.execute("""
+        INSERT INTO clip_jobs (id, project_id, video_ids, status, created_at)
+        VALUES (?, ?, ?, ?, ?)
+    """, (clip_job_id, project_id, json.dumps(video_ids), "queued", time.time()))
+    conn.commit()
+    conn.close()
+    return get_clip_job(clip_job_id)
+
+def list_clip_jobs(project_id: str) -> list:
+    conn = _db_conn()
+    rows = conn.execute("SELECT * FROM clip_jobs WHERE project_id = ? ORDER BY created_at DESC", (project_id,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+def get_clip_job(clip_job_id: str) -> Optional[dict]:
+    conn = _db_conn()
+    row = conn.execute("SELECT * FROM clip_jobs WHERE id = ?", (clip_job_id,)).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+def update_clip_job(clip_job_id: str, **fields) -> Optional[dict]:
+    conn = _db_conn()
+    updates = []
+    params = []
+    for field, val in fields.items():
+        if field in ("status", "clip_count", "result_json", "completed_at", "error"):
+            updates.append(f"{field} = ?")
+            params.append(val)
+    if updates:
+        params.append(clip_job_id)
+        conn.execute(f"UPDATE clip_jobs SET {', '.join(updates)} WHERE id = ?", params)
+        conn.commit()
+    conn.close()
+    return get_clip_job(clip_job_id)
+
+def delete_clip_job_files(clip_job_id: str):
+    job_dir = os.path.join(OUTPUT_DIR, clip_job_id)
+    if os.path.isdir(job_dir):
+        shutil.rmtree(job_dir, ignore_errors=True)
+
+def get_video_file_path(video_id: str) -> Optional[str]:
+    upload_pattern = os.path.join(UPLOAD_DIR, f"{video_id}_*")
+    upload_files = glob.glob(upload_pattern)
+    if upload_files:
+        return upload_files[0]
+    video_dir = os.path.join(OUTPUT_DIR, video_id)
+    if os.path.isdir(video_dir):
+        mp4_files = [f for f in os.listdir(video_dir) if f.endswith(".mp4")]
+        if mp4_files:
+            return os.path.join(video_dir, mp4_files[0])
+    return None
+
+def ensure_job_in_memory(job_id: str) -> bool:
+    if job_id in jobs:
+        return True
+    
+    conn = _db_conn()
+    row = conn.execute("SELECT * FROM clip_jobs WHERE id = ?", (job_id,)).fetchone()
+    if row:
+        row_dict = dict(row)
+        result = None
+        if row_dict.get("result_json"):
+            try:
+                result = json.loads(row_dict["result_json"])
+            except Exception:
+                pass
+        
+        jobs[job_id] = {
+            'status': row_dict.get('status'),
+            'logs': [f"Job {job_id} loaded from database."],
+            'result': result,
+            'output_dir': os.path.join(OUTPUT_DIR, job_id)
+        }
+        conn.close()
+        return True
+        
+    row = conn.execute("SELECT * FROM videos WHERE id = ?", (job_id,)).fetchone()
+    if row:
+        row_dict = dict(row)
+        transcript = None
+        if row_dict.get("transcript_json"):
+            try:
+                transcript = json.loads(row_dict["transcript_json"])
+            except Exception:
+                pass
+        jobs[job_id] = {
+            'status': row_dict.get('status'),
+            'logs': [f"Video analysis {job_id} loaded from database."],
+            'result': {'transcript': transcript},
+            'output_dir': os.path.join(OUTPUT_DIR, job_id)
+        }
+        conn.close()
+        return True
+    
+    conn.close()
+    return False
+
+# ── Atomic Writes & Per-Job Locks ────────────────────────────────────────
+# Ported from PR #34 (Claude Opus 4.7) — prevents metadata corruption
+# when concurrent requests hit the same job.
+
+_JOB_LOCKS: Dict[str, threading.Lock] = {}
+_JOB_LOCKS_GUARD = threading.Lock()
+
+def _job_lock(job_id: str) -> threading.Lock:
+    """Return the per-job lock, creating it lazily."""
+    with _JOB_LOCKS_GUARD:
+        lock = _JOB_LOCKS.get(job_id)
+        if lock is None:
+            lock = threading.Lock()
+            _JOB_LOCKS[job_id] = lock
+        return lock
+
+def _atomic_write_json(path: str, data: dict) -> None:
+    """Write data to path atomically via tmp file + os.replace.
+
+    If the process crashes mid-write, the old file is still intact.
+    """
+    tmp_path = f"{path}.tmp-{os.getpid()}-{threading.get_ident()}"
+    with open(tmp_path, "w") as f:
+        json.dump(data, f, indent=2)
+    os.replace(tmp_path, path)
+
+def _persist_clip_url(job_id: str, clip_index: int, new_filename: str) -> None:
+    """Update clip URL in both in-memory jobs[] and metadata.json on disk.
+
+    Holds the per-job lock for the entire read-modify-write so concurrent
+    callers serialize. Writes via atomic-rename so a crashed process can
+    never leave a half-written metadata.json on disk.
+    """
+    new_url = f"/videos/{job_id}/{new_filename}"
+    with _job_lock(job_id):
+        # Update in-memory
+        job = jobs.get(job_id)
+        if job and job.get('result') and 0 <= clip_index < len(job['result'].get('clips', [])):
+            job['result']['clips'][clip_index]['video_url'] = new_url
+
+        # Update on-disk metadata.json
+        try:
+            json_files = glob.glob(os.path.join(OUTPUT_DIR, job_id, "*_metadata.json"))
+            if json_files:
+                with open(json_files[0], 'r') as f:
+                    data = json.load(f)
+                clips = data.get('shorts', [])
+                if 0 <= clip_index < len(clips):
+                    clips[clip_index]['video_url'] = new_url
+                    data['shorts'] = clips
+                    _atomic_write_json(json_files[0], data)
+        except Exception as exc:
+            print(f"⚠️ Failed to update metadata.json for clip url: {exc}")
+
+# ── Application State ─────────────────────────────────────────────────────
 job_queue = asyncio.Queue()
-jobs: Dict[str, Dict] = {}
+class JobsDict(dict):
+    def __contains__(self, key):
+        if dict.__contains__(self, key):
+            return True
+        return ensure_job_in_memory(key)
+        
+    def get(self, key, default=None):
+        if key in self:
+            return dict.__getitem__(self, key)
+        return default
+        
+    def __getitem__(self, key):
+        if key in self:
+            return dict.__getitem__(self, key)
+        raise KeyError(key)
+
+jobs = JobsDict()
 thumbnail_sessions: Dict[str, Dict] = {}
 publish_jobs: Dict[str, Dict] = {}  # {publish_id: {status, result, error}}
 # Semester to limit concurrency to MAX_CONCURRENT_JOBS
@@ -80,26 +640,58 @@ def _relocate_root_job_artifacts(job_id: str, job_output_dir: str) -> bool:
         return True
     except Exception:
         return False
-
 async def cleanup_jobs():
-    """Background task to remove old jobs and files."""
-    import time
+    """Background task to remove old files based on project retention settings."""
     print("🧹 Cleanup task started.")
     while True:
         try:
             await asyncio.sleep(300) # Check every 5 minutes
             now = time.time()
             
-            # Simple directory cleanup based on modification time
-            # Check OUTPUT_DIR
-            for job_id in os.listdir(OUTPUT_DIR):
-                job_path = os.path.join(OUTPUT_DIR, job_id)
-                if os.path.isdir(job_path):
-                    if now - os.path.getmtime(job_path) > JOB_RETENTION_SECONDS:
-                        print(f"🧹 Purging old job: {job_id}")
-                        shutil.rmtree(job_path, ignore_errors=True)
-                        if job_id in jobs:
-                            del jobs[job_id]
+            conn = _db_conn()
+            projects = conn.execute("SELECT * FROM projects").fetchall()
+            
+            for proj in projects:
+                proj_dict = dict(proj)
+                retention_seconds = proj_dict.get("retention_days", 7) * 24 * 3600
+                cutoff = now - retention_seconds
+                
+                # Cleanup videos in this project
+                vids = conn.execute("SELECT id FROM videos WHERE project_id = ? AND created_at < ?", (proj_dict["id"], cutoff)).fetchall()
+                for vid in vids:
+                    vid_id = vid["id"]
+                    # Delete MP4 files in video output dir
+                    video_dir = os.path.join(OUTPUT_DIR, vid_id)
+                    if os.path.isdir(video_dir):
+                        for f in os.listdir(video_dir):
+                            if f.endswith(".mp4"):
+                                try:
+                                    os.remove(os.path.join(video_dir, f))
+                                    print(f"🧹 Cleaned up video file: {f}")
+                                except Exception:
+                                    pass
+                    # Delete files in UPLOAD_DIR
+                    for filename in os.listdir(UPLOAD_DIR):
+                        if filename.startswith(vid_id) and filename.endswith(".mp4"):
+                            try:
+                                os.remove(os.path.join(UPLOAD_DIR, filename))
+                                print(f"🧹 Cleaned up upload file: {filename}")
+                            except Exception:
+                                pass
+                                
+                # Cleanup clip jobs in this project
+                cjs = conn.execute("SELECT id FROM clip_jobs WHERE project_id = ? AND created_at < ?", (proj_dict["id"], cutoff)).fetchall()
+                for cj in cjs:
+                    cj_id = cj["id"]
+                    job_dir = os.path.join(OUTPUT_DIR, cj_id)
+                    if os.path.isdir(job_dir):
+                        for f in os.listdir(job_dir):
+                            if f.endswith(".mp4"):
+                                try:
+                                    os.remove(os.path.join(job_dir, f))
+                                    print(f"🧹 Cleaned up clip file: {f}")
+                                except Exception:
+                                    pass
 
             # Cleanup SaaSShorts jobs from memory
             try:
@@ -115,14 +707,7 @@ async def cleanup_jobs():
             except NameError:
                 pass
 
-            # Cleanup Uploads
-            for filename in os.listdir(UPLOAD_DIR):
-                file_path = os.path.join(UPLOAD_DIR, filename)
-                try:
-                    if now - os.path.getmtime(file_path) > JOB_RETENTION_SECONDS:
-                         os.remove(file_path)
-                except Exception: pass
-
+            conn.close()
         except Exception as e:
             print(f"⚠️ Cleanup error: {e}")
 
@@ -161,11 +746,12 @@ async def run_job_wrapper(job_id):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Initialize database
+    init_db()
     # Start worker and cleanup
     worker_task = asyncio.create_task(process_queue())
     cleanup_task = asyncio.create_task(cleanup_jobs())
     yield
-    # Cleanup (optional: cancel worker)
 
 app = FastAPI(lifespan=lifespan)
 
@@ -209,10 +795,19 @@ async def run_job(job_id, job_data):
     cmd = job_data['cmd']
     env = job_data['env']
     output_dir = job_data['output_dir']
+    job_type = job_data.get('type', 'legacy')
     
     jobs[job_id]['status'] = 'processing'
     jobs[job_id]['logs'].append("Job started by worker.")
-    print(f"🎬 [run_job] Executing command for {job_id}: {' '.join(cmd)}")
+    
+    if job_type == 'video_analysis':
+        update_video(job_id, status='analyzing')
+    elif job_type == 'clip_generation':
+        update_clip_job(job_id, status='processing')
+    else:
+        save_job(job_id, status='processing')
+        
+    print(f"🎬 [run_job] Executing command for {job_id} ({job_type}): {' '.join(cmd)}")
     
     try:
         process = subprocess.Popen(
@@ -223,95 +818,216 @@ async def run_job(job_id, job_data):
             cwd=os.getcwd()
         )
         
-        # We need to capture logs in a thread because Popen isn't async
         t_log = threading.Thread(target=enqueue_output, args=(process.stdout, job_id))
         t_log.daemon = True
         t_log.start()
         
-        # Async wait for process with incremental updates
-        start_wait = time.time()
         while process.poll() is None:
             await asyncio.sleep(2)
             
-            # Check for partial results every 2 seconds
-            # Look for metadata file
-            try:
-                json_files = glob.glob(os.path.join(output_dir, "*_metadata.json"))
-                if json_files:
-                    target_json = json_files[0]
-                    # Read metadata (it might be being written to, so simple try/except or just read)
-                    # Use a lock or just robust read? json.load might fail if file is partial.
-                    # Usually main.py writes it once at start (based on my review).
-                    if os.path.getsize(target_json) > 0:
-                        with open(target_json, 'r') as f:
-                            data = json.load(f)
+            # Legacy/Clips progress updates
+            if job_type == 'clip_generation' or job_type == 'legacy':
+                try:
+                    json_files = glob.glob(os.path.join(output_dir, "*_metadata.json"))
+                    if json_files:
+                        target_json = json_files[0]
+                        if os.path.getsize(target_json) > 0:
+                            with open(target_json, 'r') as f:
+                                data = json.load(f)
+                                
+                            clips = data.get('shorts', [])
+                            cost_analysis = data.get('cost_analysis')
                             
-                        base_name = os.path.basename(target_json).replace('_metadata.json', '')
-                        clips = data.get('shorts', [])
-                        cost_analysis = data.get('cost_analysis')
-                        
-                        # Check which clips actually exist on disk
-                        ready_clips = []
-                        for i, clip in enumerate(clips):
-                             clip_filename = f"{base_name}_clip_{i+1}.mp4"
-                             clip_path = os.path.join(output_dir, clip_filename)
-                             if os.path.exists(clip_path) and os.path.getsize(clip_path) > 0:
-                                 # Checking if file is growing? For now assume if it exists and main.py moves it there, it's done.
-                                 # main.py writes to temp_... then moves to final name. So presence means ready!
-                                 clip['video_url'] = f"/videos/{job_id}/{clip_filename}"
-                                 ready_clips.append(clip)
-                        
-                        if ready_clips:
-                             jobs[job_id]['result'] = {'clips': ready_clips, 'cost_analysis': cost_analysis}
-            except Exception as e:
-                # Ignore read errors during processing
-                pass
+                            ready_clips = []
+                            for i, clip in enumerate(clips):
+                                 # clip_generation uses {job_id}_clip_{i+1}.mp4
+                                 # legacy uses {base_name}_clip_{i+1}.mp4
+                                 if job_type == 'clip_generation':
+                                     clip_filename = f"{job_id}_clip_{i+1}.mp4"
+                                 else:
+                                     base_name = os.path.basename(target_json).replace('_metadata.json', '')
+                                     clip_filename = f"{base_name}_clip_{i+1}.mp4"
+                                 clip_path = os.path.join(output_dir, clip_filename)
+                                 if os.path.exists(clip_path) and os.path.getsize(clip_path) > 0:
+                                     clip['video_url'] = f"/videos/{job_id}/{clip_filename}"
+                                     ready_clips.append(clip)
+                            
+                            if ready_clips:
+                                 jobs[job_id]['result'] = {'clips': ready_clips, 'cost_analysis': cost_analysis}
+                except Exception:
+                    pass
 
         returncode = process.returncode
         
         if returncode == 0:
-            jobs[job_id]['status'] = 'completed'
-            jobs[job_id]['logs'].append("Process finished successfully.")
-            
-            # Start S3 upload in background (silent, non-blocking)
-            loop = asyncio.get_event_loop()
-            loop.run_in_executor(None, upload_job_artifacts, output_dir, job_id)
-            
-            # Find result JSON
-            json_files = glob.glob(os.path.join(output_dir, "*_metadata.json"))
-            if not json_files:
-                # Backward-compat rescue if outputs were written to OUTPUT_DIR root
-                if _relocate_root_job_artifacts(job_id, output_dir):
-                    json_files = glob.glob(os.path.join(output_dir, "*_metadata.json"))
-            if json_files:
-                target_json = json_files[0] 
-                with open(target_json, 'r') as f:
-                    data = json.load(f)
+            if job_type == 'video_analysis':
+                transcript_json = None
+                dossier_text = None
+                duration_seconds = 0.0
                 
-                # Enhance result with video URLs
-                base_name = os.path.basename(target_json).replace('_metadata.json', '')
-                clips = data.get('shorts', [])
-                cost_analysis = data.get('cost_analysis')
-
-                for i, clip in enumerate(clips):
-                     clip_filename = f"{base_name}_clip_{i+1}.mp4"
-                     clip['video_url'] = f"/videos/{job_id}/{clip_filename}"
+                transcript_path = os.path.join(output_dir, "transcript.json")
+                if os.path.exists(transcript_path):
+                    try:
+                        with open(transcript_path, 'r') as f:
+                            transcript_data = json.load(f)
+                            transcript_json = json.dumps(transcript_data)
+                            duration_seconds = transcript_data.get("duration_seconds", 0.0)
+                    except Exception as ex:
+                        print(f"Error reading transcript: {ex}")
                 
-                jobs[job_id]['result'] = {'clips': clips, 'cost_analysis': cost_analysis}
+                dossier_path = os.path.join(output_dir, "dossier.md")
+                if os.path.exists(dossier_path):
+                    try:
+                        with open(dossier_path, 'r') as f:
+                            dossier_text = f.read()
+                    except Exception as ex:
+                        print(f"Error reading dossier: {ex}")
+                
+                update_video(job_id, status='ready', completed_at=time.time(),
+                             transcript_json=transcript_json, dossier_text=dossier_text,
+                             duration_seconds=duration_seconds)
+                
+                jobs[job_id]['status'] = 'completed'
+                jobs[job_id]['result'] = {
+                    'transcript': json.loads(transcript_json) if transcript_json else None,
+                    'dossier': dossier_text
+                }
+                jobs[job_id]['logs'].append("Analysis finished successfully.")
+                
+            elif job_type == 'clip_generation':
+                json_files = glob.glob(os.path.join(output_dir, "*_metadata.json"))
+                if json_files:
+                    target_json = json_files[0]
+                    try:
+                        with open(target_json, 'r') as f:
+                            data = json.load(f)
+                        clips = data.get('shorts', [])
+                        cost_analysis = data.get('cost_analysis')
+                        # Clip files are named {job_id}_clip_{i+1}.mp4 by main.py
+                        for i, clip in enumerate(clips):
+                            clip_filename = f"{job_id}_clip_{i+1}.mp4"
+                            clip['video_url'] = f"/videos/{job_id}/{clip_filename}"
+                        
+                        update_clip_job(job_id, status='completed', completed_at=time.time(),
+                                        clip_count=len(clips), result_json=json.dumps({'clips': clips, 'cost_analysis': cost_analysis}))
+                        
+                        jobs[job_id]['status'] = 'completed'
+                        jobs[job_id]['result'] = {'clips': clips, 'cost_analysis': cost_analysis}
+                        jobs[job_id]['logs'].append("Clipping finished successfully.")
+                    except Exception as ex:
+                        update_clip_job(job_id, status='failed', error=str(ex))
+                        jobs[job_id]['status'] = 'failed'
+                        jobs[job_id]['logs'].append(f"Error parsing metadata: {str(ex)}")
+                else:
+                    update_clip_job(job_id, status='failed', error="No metadata file generated.")
+                    jobs[job_id]['status'] = 'failed'
+                    jobs[job_id]['logs'].append("No metadata file generated.")
+                    
             else:
-                 jobs[job_id]['status'] = 'failed'
-                 jobs[job_id]['logs'].append("No metadata file generated.")
+                jobs[job_id]['status'] = 'completed'
+                jobs[job_id]['logs'].append("Process finished successfully.")
+                
+                loop = asyncio.get_event_loop()
+                loop.run_in_executor(None, upload_job_artifacts, output_dir, job_id)
+                
+                json_files = glob.glob(os.path.join(output_dir, "*_metadata.json"))
+                if not json_files:
+                    if _relocate_root_job_artifacts(job_id, output_dir):
+                        json_files = glob.glob(os.path.join(output_dir, "*_metadata.json"))
+                if json_files:
+                    target_json = json_files[0] 
+                    with open(target_json, 'r') as f:
+                        data = json.load(f)
+                    
+                    base_name = os.path.basename(target_json).replace('_metadata.json', '')
+                    clips = data.get('shorts', [])
+                    cost_analysis = data.get('cost_analysis')
+
+                    for i, clip in enumerate(clips):
+                         clip_filename = f"{base_name}_clip_{i+1}.mp4"
+                         clip['video_url'] = f"/videos/{job_id}/{clip_filename}"
+                    
+                    jobs[job_id]['result'] = {'clips': clips, 'cost_analysis': cost_analysis}
+                    save_job(job_id, status='completed', completed_at=time.time(),
+                             clip_count=len(clips), result_json=json.dumps({'clips': clips, 'cost_analysis': cost_analysis}))
+                else:
+                     jobs[job_id]['status'] = 'failed'
+                     jobs[job_id]['logs'].append("No metadata file generated.")
+                     save_job(job_id, status='failed', error="No metadata file generated.")
         else:
+            if job_type == 'video_analysis':
+                update_video(job_id, status='failed', error=f"Exit code {returncode}")
+            elif job_type == 'clip_generation':
+                update_clip_job(job_id, status='failed', error=f"Exit code {returncode}")
+            else:
+                save_job(job_id, status='failed', error=f"Exit code {returncode}")
+                
             jobs[job_id]['status'] = 'failed'
             jobs[job_id]['logs'].append(f"Process failed with exit code {returncode}")
             
     except Exception as e:
+        if job_type == 'video_analysis':
+            update_video(job_id, status='failed', error=str(e))
+        elif job_type == 'clip_generation':
+            update_clip_job(job_id, status='failed', error=str(e))
+        else:
+            save_job(job_id, status='failed', error=str(e))
+            
         jobs[job_id]['status'] = 'failed'
-        jobs[job_id]['logs'].append(f"Execution error: {str(e)}")
+        save_job(job_id, status='failed', error=str(e))
 
 @app.get("/api/config")
 async def get_config():
     return {"youtubeUrlEnabled": not DISABLE_YOUTUBE_URL}
+
+@app.get("/api/jobs")
+async def list_jobs_endpoint(limit: int = 50, offset: int = 0):
+    """List all jobs (newest first) with pagination."""
+    jobs_list = list_jobs(limit=limit, offset=offset)
+    # Parse result_json back to dict for each job
+    for j in jobs_list:
+        if j.get("result_json"):
+            try:
+                j["result"] = json.loads(j["result_json"])
+            except json.JSONDecodeError:
+                j["result"] = None
+        # Check if output files still exist on disk
+        job_dir = os.path.join(OUTPUT_DIR, j["id"])
+        j["files_exist"] = os.path.isdir(job_dir) and len(os.listdir(job_dir)) > 0
+    return {"jobs": jobs_list, "total": len(jobs_list)}
+
+@app.get("/api/jobs/{job_id}")
+async def get_job_endpoint(job_id: str):
+    """Get full details for a single job."""
+    job = get_job(job_id)
+    if not job:
+        # Fall back to in-memory dict for very recent jobs not yet persisted
+        if job_id in jobs:
+            mem_job = jobs[job_id]
+            return {
+                "id": job_id,
+                "status": mem_job.get("status"),
+                "logs": mem_job.get("logs", [])[-20:],  # Last 20 log lines
+                "result": mem_job.get("result"),
+                "files_exist": os.path.isdir(mem_job.get("output_dir", "")),
+            }
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    if job.get("result_json"):
+        try:
+            job["result"] = json.loads(job["result_json"])
+        except json.JSONDecodeError:
+            job["result"] = None
+    
+    # Check if files still exist
+    job_dir = os.path.join(OUTPUT_DIR, job_id)
+    job["files_exist"] = os.path.isdir(job_dir) and len(os.listdir(job_dir)) > 0
+    
+    # Add recent logs from in-memory if available
+    if job_id in jobs:
+        job["logs"] = jobs[job_id].get("logs", [])[-20:]
+    
+    return job
 
 @app.post("/api/process")
 async def process_endpoint(
@@ -400,6 +1116,16 @@ async def process_endpoint(
         'attestation': attestation
     }
 
+    # Persist to database
+    save_job(
+        job_id,
+        source_type=attestation['source'],
+        source_url=url,
+        source_filename=file.filename if file else None,
+        status='queued',
+        created_at=attestation['timestamp']
+    )
+
     await job_queue.put(job_id)
 
     return {"job_id": job_id, "status": "queued"}
@@ -415,6 +1141,390 @@ async def get_status(job_id: str):
         "logs": job['logs'],
         "result": job.get('result')
     }
+
+class ProjectCreate(BaseModel):
+    name: str
+    dossier_enabled: bool = False
+    retention_days: int = 7
+    content_type: str = 'general'
+    custom_instructions: Optional[str] = None
+
+class ProjectUpdate(BaseModel):
+    name: Optional[str] = None
+    dossier_enabled: Optional[bool] = None
+    retention_days: Optional[int] = None
+    content_type: Optional[str] = None
+    custom_instructions: Optional[str] = None
+
+class ClipJobCreate(BaseModel):
+    video_ids: List[str]
+    detection_prompt: Optional[str] = None
+
+@app.post("/api/projects")
+async def api_create_project(project: ProjectCreate):
+    return create_project(
+        project.name,
+        project.dossier_enabled,
+        project.retention_days,
+        project.content_type,
+        project.custom_instructions
+    )
+
+@app.get("/api/projects")
+async def api_list_projects():
+    return {"projects": list_projects()}
+
+@app.get("/api/projects/{project_id}")
+async def api_get_project(project_id: str):
+    p = get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return p
+
+@app.put("/api/projects/{project_id}")
+async def api_update_project(project_id: str, proj: ProjectUpdate):
+    p = get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    fields = {k: v for k, v in proj.dict().items() if v is not None}
+    return update_project(project_id, **fields)
+
+@app.delete("/api/projects/{project_id}")
+async def api_delete_project(project_id: str):
+    p = get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    delete_project(project_id)
+    return {"status": "success"}
+
+@app.post("/api/projects/{project_id}/videos")
+async def api_analyze_video(
+    project_id: str,
+    request: Request,
+    file: Optional[UploadFile] = File(None),
+    url: Optional[str] = Form(None),
+    acknowledged: Optional[str] = Form(None)
+):
+    p = get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+        
+    api_key = request.headers.get("X-Gemini-Key")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Missing X-Gemini-Key header")
+
+    ack_flag = str(acknowledged).lower() in ("1", "true", "yes")
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        body = await request.json()
+        url = body.get("url")
+        ack_flag = bool(body.get("acknowledged"))
+
+    if not url and not file:
+        raise HTTPException(status_code=400, detail="Must provide URL or File")
+
+    if not ack_flag:
+        raise HTTPException(status_code=400, detail="You must confirm you own the content or have rights to process it.")
+
+    if url and DISABLE_YOUTUBE_URL:
+        raise HTTPException(status_code=403, detail="YouTube URL ingest is disabled on this deployment. Please upload a file you own.")
+
+    # Capture attestation context for legal record (IP + timestamp + UA)
+    client_ip = request.client.host if request.client else "unknown"
+    fwd = request.headers.get("x-forwarded-for")
+    if fwd:
+        client_ip = fwd.split(",")[0].strip()
+    user_agent = request.headers.get("user-agent", "")
+    attestation = {
+        "acknowledged": True,
+        "ip": client_ip,
+        "user_agent": user_agent,
+        "timestamp": time.time(),
+        "source": "url" if url else "file",
+    }
+
+    video_id = str(uuid.uuid4())
+    video_output_dir = os.path.join(OUTPUT_DIR, video_id)
+    os.makedirs(video_output_dir, exist_ok=True)
+
+    # Prepare Command
+    cmd = ["python", "-u", "main.py", "--analyze"]
+    env = os.environ.copy()
+    env["GEMINI_API_KEY"] = api_key # Override with key from request
+
+    if url:
+        cmd.extend(["-u", url])
+    else:
+        # Save uploaded file with size limit check
+        input_path = os.path.join(UPLOAD_DIR, f"{video_id}_{file.filename}")
+
+        # Read file in chunks to check size
+        size = 0
+        limit_bytes = MAX_FILE_SIZE_MB * 1024 * 1024
+
+        with open(input_path, "wb") as buffer:
+            while content := await file.read(1024 * 1024): # Read 1MB chunks
+                size += len(content)
+                if size > limit_bytes:
+                    os.remove(input_path)
+                    shutil.rmtree(video_output_dir)
+                    raise HTTPException(status_code=413, detail=f"File too large. Max size {MAX_FILE_SIZE_MB}MB")
+                buffer.write(content)
+
+        cmd.extend(["-i", input_path])
+
+    cmd.extend(["-o", video_output_dir])
+    if p["dossier_enabled"]:
+        cmd.append("--dossier")
+    if p.get("content_type"):
+        cmd.extend(["--content-type", p["content_type"]])
+
+    # Create the database record
+    conn = _db_conn()
+    conn.execute("""
+        INSERT INTO videos (id, project_id, source_type, source_url, source_filename, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (video_id, project_id, attestation["source"], url, file.filename if file else None, "analyzing", time.time()))
+    conn.commit()
+    conn.close()
+
+    # Enqueue Job
+    jobs[video_id] = {
+        'type': 'video_analysis',
+        'status': 'queued',
+        'logs': [f"Video analysis queued for {video_id}."],
+        'cmd': cmd,
+        'env': env,
+        'output_dir': video_output_dir,
+        'attestation': attestation
+    }
+
+    await job_queue.put(video_id)
+    return {"video_id": video_id, "status": "queued"}
+
+@app.get("/api/projects/{project_id}/videos")
+async def api_list_project_videos(project_id: str):
+    p = get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    vids = list_videos(project_id)
+    for v in vids:
+        vid_id = v["id"]
+        if vid_id in jobs:
+            v["logs"] = jobs[vid_id].get("logs", [])[-10:]
+            if v["status"] == "analyzing":
+                v["status"] = jobs[vid_id].get("status", "analyzing")
+    return {"videos": vids}
+
+@app.get("/api/projects/{project_id}/videos/{video_id}/status")
+async def get_video_status(project_id: str, video_id: str):
+    vid = get_video(video_id)
+    if not vid:
+        raise HTTPException(status_code=404, detail="Video not found")
+    
+    logs = []
+    if video_id in jobs:
+        logs = jobs[video_id].get("logs", [])[-20:]
+        status = jobs[video_id].get("status", vid["status"])
+    else:
+        status = vid["status"]
+        logs = [f"Analysis {status}."]
+    
+    return {
+        "status": status,
+        "logs": logs,
+        "video": vid
+    }
+
+@app.get("/api/videos/{video_id}")
+async def api_get_video_detail(video_id: str):
+    vid = get_video(video_id)
+    if not vid:
+        raise HTTPException(status_code=404, detail="Video not found")
+    
+    if vid.get("transcript_json"):
+        try:
+            vid["transcript"] = json.loads(vid["transcript_json"])
+        except Exception:
+            vid["transcript"] = None
+    else:
+        vid["transcript"] = None
+        
+    return vid
+
+@app.get("/api/videos/{video_id}/transcript")
+async def api_get_video_transcript(video_id: str):
+    vid = get_video(video_id)
+    if not vid or not vid.get("transcript_json"):
+        raise HTTPException(status_code=404, detail="Transcript not found")
+    return json.loads(vid["transcript_json"])
+
+@app.get("/api/videos/{video_id}/dossier")
+async def api_get_video_dossier(video_id: str):
+    vid = get_video(video_id)
+    if not vid or not vid.get("dossier_text"):
+        raise HTTPException(status_code=404, detail="Dossier not found")
+    return {"dossier": vid["dossier_text"]}
+
+@app.delete("/api/videos/{video_id}")
+async def api_delete_video(video_id: str):
+    vid = get_video(video_id)
+    if not vid:
+        raise HTTPException(status_code=404, detail="Video not found")
+    delete_video(video_id)
+    return {"status": "success"}
+
+@app.post("/api/projects/{project_id}/clip")
+async def generate_clips(project_id: str, req: ClipJobCreate, request: Request):
+    p = get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+        
+    api_key = request.headers.get("X-Gemini-Key") or os.environ.get("GEMINI_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="Missing Gemini API Key")
+
+    video_paths = []
+    transcript_paths = []
+    dossier_paths = []
+    
+    for vid_id in req.video_ids:
+        vid = get_video(vid_id)
+        if not vid:
+            raise HTTPException(status_code=404, detail=f"Video {vid_id} not found")
+        if vid["status"] != "ready":
+            raise HTTPException(status_code=400, detail=f"Video {vid_id} is not analyzed yet (status: {vid['status']})")
+            
+        vpath = get_video_file_path(vid_id)
+        if not vpath or not os.path.exists(vpath):
+            raise HTTPException(status_code=404, detail=f"Video file for {vid_id} not found on disk")
+            
+        video_paths.append(vpath)
+        
+        tpath = os.path.join(OUTPUT_DIR, vid_id, "transcript.json")
+        if not os.path.exists(tpath):
+            raise HTTPException(status_code=404, detail=f"Transcript file for {vid_id} not found on disk")
+        transcript_paths.append(tpath)
+        
+        dpath = os.path.join(OUTPUT_DIR, vid_id, "dossier.md")
+        if os.path.exists(dpath):
+            dossier_paths.append(dpath)
+
+    clip_job = create_clip_job(project_id, req.video_ids)
+    clip_job_id = clip_job["id"]
+    
+    clip_output_dir = os.path.join(OUTPUT_DIR, clip_job_id)
+    os.makedirs(clip_output_dir, exist_ok=True)
+    
+    cmd = ["python", "-u", "main.py", "--clip"]
+    env = os.environ.copy()
+    env["GEMINI_API_KEY"] = api_key
+    
+    cmd.extend(["-o", clip_output_dir])
+    
+    cmd.append("-i")
+    cmd.extend(video_paths)
+    
+    cmd.append("--transcript")
+    cmd.extend(transcript_paths)
+    
+    if dossier_paths:
+        cmd.append("--dossier")
+        cmd.extend(dossier_paths)
+
+    if p.get("content_type"):
+        cmd.extend(["--content-type", p["content_type"]])
+
+    # Build the final prompt: project custom_instructions first, then per-job detection_prompt
+    prompt_parts = []
+    if p.get("custom_instructions"):
+        prompt_parts.append(p["custom_instructions"].strip())
+    if req.detection_prompt:
+        prompt_parts.append(req.detection_prompt.strip())
+    if prompt_parts:
+        cmd.extend(["--prompt", "\n\n".join(prompt_parts)])
+
+    jobs[clip_job_id] = {
+        'type': 'clip_generation',
+        'status': 'queued',
+        'logs': [f"Clip job {clip_job_id} queued."],
+        'cmd': cmd,
+        'env': env,
+        'output_dir': clip_output_dir
+    }
+    
+    await job_queue.put(clip_job_id)
+    return {"clip_job_id": clip_job_id, "status": "queued"}
+
+@app.get("/api/projects/{project_id}/clips")
+async def api_list_project_clips(project_id: str):
+    p = get_project(project_id)
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+    cjs = list_clip_jobs(project_id)
+    for cj in cjs:
+        cj_id = cj["id"]
+        if cj_id in jobs:
+            cj["logs"] = jobs[cj_id].get("logs", [])[-10:]
+            if cj["status"] == "queued" or cj["status"] == "processing":
+                cj["status"] = jobs[cj_id].get("status", cj["status"])
+        if cj.get("result_json"):
+            try:
+                cj["result"] = json.loads(cj["result_json"])
+            except Exception:
+                cj["result"] = None
+    return {"clip_jobs": cjs}
+
+@app.get("/api/clip-jobs/{clip_job_id}")
+async def api_get_clip_job_detail(clip_job_id: str):
+    cj = get_clip_job(clip_job_id)
+    if not cj:
+        if clip_job_id in jobs:
+            mem_job = jobs[clip_job_id]
+            return {
+                "id": clip_job_id,
+                "status": mem_job.get("status"),
+                "logs": mem_job.get("logs", [])[-20:],
+                "result": mem_job.get("result"),
+                "files_exist": os.path.isdir(mem_job.get("output_dir", ""))
+            }
+        raise HTTPException(status_code=404, detail="Clip job not found")
+    
+    if cj.get("result_json"):
+        try:
+            cj["result"] = json.loads(cj["result_json"])
+        except Exception:
+            cj["result"] = None
+            
+    job_dir = os.path.join(OUTPUT_DIR, clip_job_id)
+    cj["files_exist"] = os.path.isdir(job_dir) and len(os.listdir(job_dir)) > 0
+    
+    if clip_job_id in jobs:
+        cj["logs"] = jobs[clip_job_id].get("logs", [])[-20:]
+        cj["status"] = jobs[clip_job_id].get("status", cj["status"])
+        if jobs[clip_job_id].get("result"):
+            cj["result"] = jobs[clip_job_id].get("result")
+    else:
+        cj["logs"] = [f"Clip job {cj['status']}."]
+        
+    return cj
+
+@app.get("/api/clip-jobs/{clip_job_id}/clips")
+async def api_get_clip_job_clips(clip_job_id: str):
+    cj = get_clip_job(clip_job_id)
+    result = None
+    if cj and cj.get("result_json"):
+        try:
+            result = json.loads(cj["result_json"])
+        except Exception:
+            pass
+    elif clip_job_id in jobs and jobs[clip_job_id].get("result"):
+        result = jobs[clip_job_id]["result"]
+        
+    if not result or not result.get("clips"):
+        raise HTTPException(status_code=404, detail="Clips not found or job not completed yet")
+        
+    return result
 
 from editor import VideoEditor
 from subtitles import generate_srt, burn_subtitles, generate_srt_from_video
@@ -849,10 +1959,9 @@ async def add_subtitles(req: SubtitleRequest):
             # Update the main data structure
             data['shorts'] = clips
             
-            # Write back
-            with open(json_files[0], 'w') as f:
-                json.dump(data, f, indent=4)
-                print(f"✅ Metadata updated with subtitled video for clip {req.clip_index}")
+            # Write back atomically
+            _atomic_write_json(json_files[0], data)
+            print(f"✅ Metadata updated with subtitled video for clip {req.clip_index}")
     except Exception as e:
         print(f"⚠️ Failed to update metadata.json: {e}")
         # Non-critical, but good for persistence
@@ -934,9 +2043,8 @@ async def add_hook(req: HookRequest):
         if req.clip_index < len(clips):
             clips[req.clip_index]['video_url'] = f"/videos/{req.job_id}/{output_filename}"
             data['shorts'] = clips
-            with open(json_files[0], 'w') as f:
-                json.dump(data, f, indent=4)
-                print(f"✅ Metadata updated with hook video for clip {req.clip_index}")
+            _atomic_write_json(json_files[0], data)
+            print(f"✅ Metadata updated with hook video for clip {req.clip_index}")
     except Exception as e:
         print(f"⚠️ Failed to update metadata.json: {e}")
 
@@ -1030,9 +2138,8 @@ async def translate_clip(
         if req.clip_index < len(clips):
             clips[req.clip_index]['video_url'] = f"/videos/{req.job_id}/{output_filename}"
             data['shorts'] = clips
-            with open(json_files[0], 'w') as f:
-                json.dump(data, f, indent=4)
-                print(f"✅ Metadata updated with translated video for clip {req.clip_index}")
+            _atomic_write_json(json_files[0], data)
+            print(f"✅ Metadata updated with translated video for clip {req.clip_index}")
     except Exception as e:
         print(f"⚠️ Failed to update metadata.json: {e}")
 

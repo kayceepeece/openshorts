@@ -1,6 +1,5 @@
 import time
 import cv2
-import scenedetect
 import subprocess
 import argparse
 import re
@@ -28,8 +27,43 @@ load_dotenv()
 # --- Constants ---
 ASPECT_RATIO = 9 / 16
 
-GEMINI_PROMPT_TEMPLATE = """
-You are a senior short-form video editor. Read the ENTIRE transcript and word-level timestamps to choose the 3–15 MOST VIRAL moments for TikTok/IG Reels/YouTube Shorts. Each clip must be between 15 and 60 seconds long.
+# Load helper to build clipping prompt dynamically based on content type
+def get_clipping_prompt(input_data_section, user_detection_prompt="", content_type='general'):
+    # Load universal rules
+    general_rules = ""
+    try:
+        general_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompts", "clips_general.txt")
+        if os.path.exists(general_path):
+            with open(general_path, "r", encoding="utf-8") as f:
+                general_rules = f.read().strip()
+    except Exception as e:
+        print(f"⚠️ Failed to load universal clipping rules: {e}")
+
+    # Load domain-specific rules
+    domain_rules = ""
+    if content_type and content_type != 'general':
+        try:
+            domain_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompts", f"clips_{content_type}.txt")
+            if os.path.exists(domain_path):
+                with open(domain_path, "r", encoding="utf-8") as f:
+                    domain_rules = f.read().strip()
+                print(f"✅ Loaded domain clipping rules ({content_type}): {domain_path}")
+        except Exception as e:
+            print(f"⚠️ Failed to load domain clipping rules for {content_type}: {e}")
+
+    # Explicit directive to reference the dossier if one is present:
+    dossier_directive = ""
+    if "VISUAL DOSSIER:" in input_data_section:
+        dossier_directive = """
+⚠️ DOSSIER REFERENCE REQUIREMENT:
+A forensic visual dossier is provided in the input data. It contains a ranked list of "Best Clips" or key plays/moments.
+You MUST:
+1. Cross-reference the transcript with the dossier's identified highlights.
+2. Prioritize selecting/refining clips matching the dossier's key events and best clips, unless the transcript reveals a much stronger verbal moment that has no visual component.
+3. Ensure the start and end times you output align accurately with the events described in the dossier.
+"""
+
+    prompt = f"""You are a senior short-form video editor. Read the ENTIRE transcript and visual dossier for the input video(s) to choose the 3–15 MOST VIRAL moments for TikTok/IG Reels/YouTube Shorts. Each clip must be between 15 and 60 seconds long.
 
 ⚠️ FFMPEG TIME CONTRACT — STRICT REQUIREMENTS:
 - Return timestamps in ABSOLUTE SECONDS from the start of the video (usable in: ffmpeg -ss <start> -to <end> -i <input> ...).
@@ -40,22 +74,25 @@ You are a senior short-form video editor. Read the ENTIRE transcript and word-le
 - Use silence moments for natural cuts; never cut in the middle of a word or phrase.
 - STRICTLY FORBIDDEN to use time formats other than absolute seconds.
 
-VIDEO_DURATION_SECONDS: {video_duration}
+{general_rules}
 
-TRANSCRIPT_TEXT (raw):
-{transcript_text}
+{domain_rules}
 
-WORDS_JSON (array of {{w, s, e}} where s/e are seconds):
-{words_json}
+{dossier_directive}
+
+{input_data_section}
+
+{user_detection_prompt}
 
 STRICT EXCLUSIONS:
 - No generic intros/outros or purely sponsorship segments unless they contain the hook.
 - No clips < 15 s or > 60 s.
 
-OUTPUT — RETURN ONLY VALID JSON (no markdown, no comments). Order clips by predicted performance (best to worst). In the descriptions, ALWAYS include a CTA like "Follow me and comment X and I'll send you the workflow" (especially if discussing an n8n workflow):
+OUTPUT — RETURN ONLY VALID JSON (no markdown, no comments). Order clips by predicted performance (best to worst). Write descriptions that are natural to the content type and optimised for each platform:
 {{
   "shorts": [
     {{
+      "video_index": <0-based index of the video this clip is from, e.g., 0 if only one video is provided>,
       "start": <number in seconds, e.g., 12.340>,
       "end": <number in seconds, e.g., 37.900>,
       "video_description_for_tiktok": "<description for TikTok oriented to get views>",
@@ -66,9 +103,11 @@ OUTPUT — RETURN ONLY VALID JSON (no markdown, no comments). Order clips by pre
   ]
 }}
 """
+    return prompt
 
 # Load the YOLO model once (Keep for backup or scene analysis if needed)
-model = YOLO('yolov8n.pt')
+YOLO_MODEL_PATH = os.environ.get("YOLO_MODEL_PATH", "yolov8n.pt")
+model = YOLO(YOLO_MODEL_PATH)
 
 # --- MediaPipe Setup ---
 # Use standard Face Detection (BlazeFace) for speed
@@ -473,7 +512,48 @@ def download_youtube_video(url, output_dir="."):
     else:
         cookies_path = None
         print("⚠️ YOUTUBE_COOKIES env var not found.")
-    
+
+    # Fall back to a bind-mounted cookies file when YOUTUBE_COOKIES is unset.
+    if cookies_path is None and os.path.exists('/app/youtube_cookies.txt'):
+        cookies_path = '/app/youtube_cookies.txt'
+        print(f"🍪 Found cookies on disk at {cookies_path} (size: {os.path.getsize(cookies_path)} bytes)")
+
+        # Parse Netscape cookie file and warn about upcoming expiry of auth cookies.
+        try:
+            latest_expiry = 0
+            found_auth_cookie = False
+            target_names = {'__Secure-1PSID', '__Secure-3PSID', 'SID', 'LOGIN_INFO'}
+            with open('/app/youtube_cookies.txt', 'r') as cf:
+                for raw_line in cf:
+                    line = raw_line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    fields = line.split('\t')
+                    if len(fields) < 5:
+                        continue
+                    name = fields[0]
+                    if name not in target_names:
+                        continue
+                    try:
+                        expiry = int(fields[4])
+                    except (TypeError, ValueError):
+                        continue
+                    found_auth_cookie = True
+                    if expiry > latest_expiry:
+                        latest_expiry = expiry
+            if found_auth_cookie and latest_expiry > 0:
+                days_left = int((latest_expiry - time.time()) // 86400)
+                if days_left < 0:
+                    days_left = 0
+                print(f"⚠️ YouTube cookies expire in {days_left} days")
+        except Exception:
+            # Malformed cookies file must never crash the download.
+            pass
+
+    # bgutil-ytdlp-pot-provider HTTP sidecar URL (defaults to docker-compose service name).
+    bgutil_url = os.environ.get('BGUTIL_URL', 'http://bgutil:4416')
+    print(f"🔧 PO Token provider: {bgutil_url}")
+
     # Common yt-dlp options to work around YouTube bot detection.
     # extractor_args tries multiple player clients in order; tv_embed / android
     # avoid the OAuth/PO-token checks that block server IPs.
@@ -487,11 +567,16 @@ def download_youtube_video(url, output_dir="."):
         'fragment_retries': 10,
         'nocheckcertificate': True,
         'cachedir': False,
+        'js_runtimes': ['node'],
+        'remote_components': ['ejs:github'],
         'extractor_args': {
             'youtube': {
-                'player_client': ['tv_embed', 'android', 'mweb', 'web'],
+                'player_client': ['web', 'mweb', 'tv_simply', 'ios'],
                 'player_skip': ['webpage', 'configs'],
-            }
+            },
+            'youtubepot-bgutilhttp': {
+                'base_url': bgutil_url,
+            },
         },
         'http_headers': {
             'User-Agent': (
@@ -791,7 +876,7 @@ def transcribe_video(video_path):
         'language': info.language
     }
 
-def get_viral_clips(transcript_result, video_duration):
+def get_viral_clips(transcript_result, video_duration, content_type='general'):
     print("🤖  Analyzing with Gemini...")
     
     api_key = os.getenv("GEMINI_API_KEY")
@@ -802,8 +887,8 @@ def get_viral_clips(transcript_result, video_duration):
 
     client = genai.Client(api_key=api_key)
     
-    # We use gemini-2.5-flash as requested.
-    model_name = 'gemini-2.5-flash' 
+    # We use gemini-3.5-flash (GA May 2026, current production standard).
+    model_name = 'gemini-3.5-flash'
     
     print(f"🤖  Initializing Gemini with model: {model_name}")
 
@@ -817,11 +902,11 @@ def get_viral_clips(transcript_result, video_duration):
                 'e': word['end']
             })
 
-    prompt = GEMINI_PROMPT_TEMPLATE.format(
-        video_duration=video_duration,
-        transcript_text=json.dumps(transcript_result['text']),
-        words_json=json.dumps(words)
-    )
+    input_data_section = f"VIDEO_DURATION_SECONDS: {video_duration}\n"
+    input_data_section += f"TRANSCRIPT_TEXT:\n{json.dumps(transcript_result['text'])}\n"
+    input_data_section += f"WORDS_JSON:\n{json.dumps(words)}\n"
+
+    prompt = get_clipping_prompt(input_data_section, content_type=content_type)
 
     try:
         response = client.models.generate_content(
@@ -833,12 +918,12 @@ def get_viral_clips(transcript_result, video_duration):
         try:
             usage = response.usage_metadata
             if usage:
-                # Gemini 2.5 Flash Pricing (Dec 2025)
-                # Input: $0.10 per 1M tokens
-                # Output: $0.40 per 1M tokens
+                # Gemini 3.5 Flash Pricing (June 2026)
+                # Input: $1.50 per 1M tokens
+                # Output: $9.00 per 1M tokens
                 
-                input_price_per_million = 0.10
-                output_price_per_million = 0.40
+                input_price_per_million = 1.50
+                output_price_per_million = 9.00
                 
                 prompt_tokens = usage.prompt_token_count
                 output_tokens = usage.candidates_token_count
@@ -883,16 +968,298 @@ def get_viral_clips(transcript_result, video_duration):
         print(f"❌ Gemini Error: {e}")
         return None
 
+CLIPPING_PROMPT_TEMPLATE = (
+"""
+You are a senior short-form video editor. Read the ENTIRE transcript and visual dossier for the input video(s) to choose the 3–15 MOST VIRAL moments for TikTok/IG Reels/YouTube Shorts. Each clip must be between 15 and 60 seconds long.
+
+⚠️ FFMPEG TIME CONTRACT — STRICT REQUIREMENTS:
+- Return timestamps in ABSOLUTE SECONDS from the start of the video (usable in: ffmpeg -ss <start> -to <end> -i <input> ...).
+- Only NUMBERS with decimal point, up to 3 decimals (examples: 0, 1.250, 17.350).
+- Ensure 0 ≤ start < end ≤ VIDEO_DURATION_SECONDS.
+- Each clip between 15 and 60 s (inclusive).
+- Prefer starting 0.2–0.4 s BEFORE the hook and ending 0.2–0.4 s AFTER the payoff.
+- Use silence moments for natural cuts; never cut in the middle of a word or phrase.
+- STRICTLY FORBIDDEN to use time formats other than absolute seconds.
+"""
++ ("\n" + CLIPS_GENERAL_RULES + "\n" if CLIPS_GENERAL_RULES else "")
++ """
+{input_data_section}
+
+{user_detection_prompt}
+
+STRICT EXCLUSIONS:
+- No generic intros/outros or purely sponsorship segments unless they contain the hook.
+- No clips < 15 s or > 60 s.
+
+OUTPUT — RETURN ONLY VALID JSON (no markdown, no comments). Order clips by predicted performance (best to worst). Write descriptions that are natural to the content type and optimised for each platform:
+{{
+  "shorts": [
+    {{
+      "video_index": <0-based index of the video this clip is from, e.g., 0 if only one video is provided>,
+      "start": <number in seconds, e.g., 12.340>,
+      "end": <number in seconds, e.g., 37.900>,
+      "video_description_for_tiktok": "<description for TikTok oriented to get views>",
+      "video_description_for_instagram": "<description for Instagram oriented to get views>",
+      "video_title_for_youtube_short": "<title for YouTube Short oriented to get views 100 chars max>",
+      "viral_hook_text": "<SHORT punchy text overlay (max 10 words). MUST BE IN THE SAME LANGUAGE AS THE VIDEO TRANSCRIPT. Examples: 'POV: You realized...', 'Did you know?', 'Stop doing this!'>"
+    }}
+  ]
+}}
+"""
+)
+
+def generate_dossier(video_path, api_key, content_type='general'):
+    print("📤 Uploading video to Gemini File API...")
+    client = genai.Client(api_key=api_key)
+    file_upload = client.files.upload(file=video_path)
+    print("⏳ Waiting for video processing by Gemini...")
+    while True:
+        file_info = client.files.get(name=file_upload.name)
+        if file_info.state == "ACTIVE":
+            print("✅ Video processed and ready.")
+            break
+        elif file_info.state == "FAILED":
+            raise Exception("Video processing failed by Gemini.")
+        time.sleep(2)
+        
+    try:
+        prompt_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "prompts", f"dossier_{content_type}.txt")
+        if os.path.exists(prompt_path):
+            with open(prompt_path, 'r', encoding='utf-8') as f:
+                structure_text = f.read().strip()
+            print(f"✅ Loaded domain dossier rules ({content_type}): {prompt_path}")
+        else:
+            structure_text = """## Overview
+## Timeline (with [MM:SS–MM:SS] format)
+## Key Moments / Reveals
+## Participants / People
+## Quotes
+## Best Clips (ranked)
+## Ambiguities
+## Editor Notes (hook, cold open, short-form potential)"""
+    except Exception as e:
+        print(f"⚠️ Failed to load dossier structure for {content_type}: {e}")
+        structure_text = """## Overview
+## Timeline (with [MM:SS–MM:SS] format)
+## Key Moments / Reveals
+## Participants / People
+## Quotes
+## Best Clips (ranked)
+## Ambiguities
+## Editor Notes (hook, cold open, short-form potential)"""
+
+    prompt = f"""Analyze this video like a forensic content assistant.
+
+Goal: Produce a complete Markdown dossier so another AI can generate 
+clipping scripts without watching the source.
+
+Output requirements:
+- Be exhaustive, but concise
+- Use timestamps for every meaningful event
+- Identify all people visible or mentioned
+- Separate confirmed identities from inferred identities
+- Mark uncertainty explicitly
+- Include any announcement, reveal, or key moment
+- Include only facts supported by the video
+- Do not hallucinate names, scores, or outcomes
+
+Structure:
+{structure_text}"""
+
+    print("🤖 Generating forensic analysis dossier from Gemini...")
+    try:
+        response = client.models.generate_content(
+            model='gemini-3.5-flash',
+            contents=[file_upload, prompt]
+        )
+        dossier_text = response.text
+        try:
+            client.files.delete(name=file_upload.name)
+            print("🗑️ Cleaned up file from Gemini File API.")
+        except Exception as e:
+            print(f"⚠️ Could not delete Gemini File API file: {e}")
+        return dossier_text
+    except Exception as e:
+        print(f"❌ Error generating dossier: {e}")
+        try:
+            client.files.delete(name=file_upload.name)
+        except Exception:
+            pass
+        raise e
+
+def get_video_duration(video_path):
+    cap = cv2.VideoCapture(video_path)
+    if not cap.isOpened():
+        return 0.0
+    fps = cap.get(cv2.CAP_PROP_FPS)
+    frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    duration = frame_count / fps if fps > 0 else 0.0
+    cap.release()
+    return duration
+
+def detect_clips_stage2(transcripts, dossiers, custom_prompt, api_key, content_type='general'):
+    """Process each video as its own isolated Gemini API call.
+
+    Each video = one upload + one clip-detection call. Multi-video jobs
+    accumulate results across calls rather than concatenating everything
+    into one massive prompt. This prevents quality degradation on long/many
+    videos and keeps token payloads bounded.
+    """
+    from itertools import zip_longest
+
+    print(f"🤖 Analyzing with Gemini for Clip Detection ({len(transcripts)} video(s))...")
+    client = genai.Client(api_key=api_key)
+    model_name = 'gemini-3.5-flash'
+
+    # Gemini 3.5 Flash pricing (June 2026)
+    INPUT_PRICE_PER_MILLION  = 1.50
+    OUTPUT_PRICE_PER_MILLION = 9.00
+
+    # Token estimation constants
+    TOKEN_ESTIMATE_DIVISOR = 4      # ~4 chars per token
+    TOKEN_WARN_THRESHOLD   = 40_000  # ~1–1.5 hours of word-level transcript
+
+    user_prompt_str = ""
+    if custom_prompt:
+        user_prompt_str = f"USER DETECTION PROMPT / INSTRUCTIONS:\n{custom_prompt}\n"
+
+    all_shorts      = []
+    total_cost_data = {
+        "input_tokens":  0,
+        "output_tokens": 0,
+        "input_cost":    0.0,
+        "output_cost":   0.0,
+        "total_cost":    0.0,
+        "model":         model_name,
+        "video_count":   len(transcripts),
+    }
+
+    for video_index, (trans, doss) in enumerate(zip_longest(transcripts, dossiers, fillvalue="")):
+        if trans == "":
+            # Dossiers list was longer — skip phantom entry
+            continue
+
+        print(f"\n📹 Processing video {video_index + 1}/{len(transcripts)}...")
+
+        # ── Build word list ──────────────────────────────────────────────
+        words = []
+        for segment in trans.get('segments', []):
+            for word in segment.get('words', []):
+                words.append({
+                    'w': word['word'],
+                    's': word['start'],
+                    'e': word['end']
+                })
+
+        duration = trans.get('duration_seconds', 0.0)
+
+        # ── Build per-video input section ────────────────────────────────
+        # When called per-video, video_index in the prompt is always 0
+        # so the model uses video_index=0 in its JSON output.
+        # We remap to the real index when merging results below.
+        input_data_section  = "=== VIDEO INDEX 0 ===\n"
+        input_data_section += f"VIDEO_DURATION_SECONDS: {duration}\n"
+        input_data_section += f"TRANSCRIPT_TEXT:\n{json.dumps(trans.get('text', ''))}\n"
+        input_data_section += f"WORDS_JSON:\n{json.dumps(words)}\n"
+        if doss:
+            input_data_section += f"VISUAL DOSSIER:\n{doss}\n"
+
+        # ── Pre-flight token estimate ────────────────────────────────────
+        raw_payload = input_data_section + user_prompt_str
+        estimated_tokens = len(raw_payload) // TOKEN_ESTIMATE_DIVISOR
+        print(f"   📊 Estimated input tokens: ~{estimated_tokens:,}")
+        if estimated_tokens > TOKEN_WARN_THRESHOLD:
+            print(f"   ⚠️  Large payload detected ({estimated_tokens:,} tokens > {TOKEN_WARN_THRESHOLD:,} threshold).")
+            print(f"   ⚠️  Consider splitting videos longer than ~1 hour for best quality.")
+
+        prompt = get_clipping_prompt(input_data_section, user_detection_prompt=user_prompt_str, content_type=content_type)
+
+        # ── Gemini API call ──────────────────────────────────────────────
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt
+            )
+
+            # Cost tracking
+            try:
+                usage = response.usage_metadata
+                if usage:
+                    prompt_tokens = usage.prompt_token_count or 0
+                    output_tokens = usage.candidates_token_count or 0
+                    input_cost    = (prompt_tokens / 1_000_000) * INPUT_PRICE_PER_MILLION
+                    output_cost   = (output_tokens / 1_000_000) * OUTPUT_PRICE_PER_MILLION
+                    call_cost     = input_cost + output_cost
+                    print(f"   💰 Token usage: {prompt_tokens:,} in / {output_tokens:,} out → ${call_cost:.6f}")
+                    total_cost_data["input_tokens"]  += prompt_tokens
+                    total_cost_data["output_tokens"] += output_tokens
+                    total_cost_data["input_cost"]    += input_cost
+                    total_cost_data["output_cost"]   += output_cost
+                    total_cost_data["total_cost"]    += call_cost
+            except Exception as cost_err:
+                print(f"   ⚠️ Could not calculate cost for video {video_index}: {cost_err}")
+
+            # Parse response
+            text = response.text
+            if text.startswith("```json"):
+                text = text[7:]
+            if text.endswith("```"):
+                text = text[:-3]
+            text = text.strip()
+
+            video_result = json.loads(text)
+            shorts = video_result.get("shorts", [])
+
+            # Remap video_index=0 → real index in the multi-video result set
+            for clip in shorts:
+                clip["video_index"] = video_index
+
+            all_shorts.extend(shorts)
+            print(f"   ✅ Found {len(shorts)} clip(s) for video {video_index + 1}")
+
+        except Exception as e:
+            print(f"   ❌ Gemini error on video {video_index + 1}: {e}")
+            # Continue processing remaining videos rather than aborting entire job
+            continue
+
+    if not all_shorts:
+        print("❌ No clips detected across any videos.")
+        return None
+
+    # Print cumulative cost summary for multi-video jobs
+    if len(transcripts) > 1:
+        print(f"\n💰 Total cost across {len(transcripts)} videos:")
+        print(f"   - Input tokens:  {total_cost_data['input_tokens']:,}  (${total_cost_data['input_cost']:.6f})")
+        print(f"   - Output tokens: {total_cost_data['output_tokens']:,} (${total_cost_data['output_cost']:.6f})")
+        print(f"   - Grand total:   ${total_cost_data['total_cost']:.6f}")
+
+    return {
+        "shorts":        all_shorts,
+        "cost_analysis": total_cost_data,
+    }
+
+
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description="AutoCrop-Vertical with Viral Clip Detection.")
+    parser = argparse.ArgumentParser(description="AutoCrop-Vertical with Stage-Based Platform.")
     
-    input_group = parser.add_mutually_exclusive_group(required=True)
-    input_group.add_argument('-i', '--input', type=str, help="Path to the input video file.")
-    input_group.add_argument('-u', '--url', type=str, help="YouTube URL to download and process.")
+    # Modes
+    parser.add_argument('--analyze', action='store_true', help="Stage 1: Analyze video (transcription + optional dossier)")
+    parser.add_argument('--clip', action='store_true', help="Stage 2: Generate clips from analysis")
     
-    parser.add_argument('-o', '--output', type=str, help="Output directory or file (if processing whole video).")
-    parser.add_argument('--keep-original', action='store_true', help="Keep the downloaded YouTube video.")
-    parser.add_argument('--skip-analysis', action='store_true', help="Skip AI analysis and convert the whole video.")
+    # Inputs
+    parser.add_argument('-i', '--input', type=str, nargs='*', help="Path to input video file(s).")
+    parser.add_argument('-u', '--url', type=str, help="YouTube URL to download and process (only for analyze mode).")
+    
+    # Outputs
+    parser.add_argument('-o', '--output', type=str, help="Output directory or file.")
+    
+    # Flags & Config
+    parser.add_argument('--dossier', type=str, nargs='*', help="Dossier file(s) for clipping, or use as boolean flag in analyze mode.")
+    parser.add_argument('--transcript', type=str, nargs='*', help="Transcript JSON file(s) for clipping mode.")
+    parser.add_argument('--prompt', type=str, default="", help="Custom prompt for clip detection.")
+    parser.add_argument('--content-type', type=str, default="general", help="Domain/content type template to use (general, sports, podcast, lecture, gaming, interview).")
+    parser.add_argument('--keep-original', action='store_true', help="Keep downloaded YouTube video (legacy mode).")
+    parser.add_argument('--skip-analysis', action='store_true', help="Skip AI analysis and convert whole video (legacy mode).")
     
     args = parser.parse_args()
 
@@ -903,115 +1270,268 @@ if __name__ == '__main__':
         if path:
             os.makedirs(path, exist_ok=True)
         return path
-    
-    # 1. Get Input Video
-    if args.url:
-        # For multi-clip runs, treat --output as an OUTPUT DIRECTORY (create it if needed).
-        # For whole-video runs (--skip-analysis), --output can be a file path.
-        if args.output and not args.skip_analysis:
-            output_dir = _ensure_dir(args.output)
-        else:
-            # If output is a directory, use it; if it's a filename, use its directory; else default "."
-            if args.output and os.path.isdir(args.output):
-                output_dir = args.output
-            elif args.output and not os.path.isdir(args.output):
-                output_dir = os.path.dirname(args.output) or "."
-            else:
-                output_dir = "."
-        
-        input_video, video_title = download_youtube_video(args.url, output_dir)
-    else:
-        input_video = args.input
-        video_title = os.path.splitext(os.path.basename(input_video))[0]
-        
-        if args.output and not args.skip_analysis:
-            # For multi-clip runs, treat --output as an OUTPUT DIRECTORY (create it if needed).
-            output_dir = _ensure_dir(args.output)
-        else:
-            # If output is a directory, use it; if it's a filename, use its directory; else default to input dir.
-            if args.output and os.path.isdir(args.output):
-                output_dir = args.output
-            elif args.output and not os.path.isdir(args.output):
-                output_dir = os.path.dirname(args.output) or os.path.dirname(input_video)
-            else:
-                output_dir = os.path.dirname(input_video)
 
-    if not os.path.exists(input_video):
-        print(f"❌ Input file not found: {input_video}")
-        exit(1)
-
-    # 2. Decision: Analyze clips or process whole?
-    if args.skip_analysis:
-        print("⏩ Skipping analysis, processing entire video...")
-        output_file = args.output if args.output else os.path.join(output_dir, f"{video_title}_vertical.mp4")
-        process_video_to_vertical(input_video, output_file)
-    else:
-        # 3. Transcribe
+    if args.analyze:
+        print("🔍 Running in Stage 1: Analyze mode...")
+        if not args.url and (not args.input or len(args.input) == 0):
+            print("❌ Analyze mode requires either -u/--url or -i/--input.")
+            sys.exit(1)
+            
+        if not args.output:
+            print("❌ Analyze mode requires -o/--output directory.")
+            sys.exit(1)
+            
+        output_dir = _ensure_dir(args.output)
+        
+        # 1. Get Input Video
+        if args.url:
+            input_video, video_title = download_youtube_video(args.url, output_dir)
+        else:
+            input_video = args.input[0]
+            video_title = os.path.splitext(os.path.basename(input_video))[0]
+            
+        if not os.path.exists(input_video):
+            print(f"❌ Input file not found: {input_video}")
+            sys.exit(1)
+            
+        # 2. Transcribe
         transcript = transcribe_video(input_video)
+        duration = get_video_duration(input_video)
+        transcript['duration_seconds'] = duration
         
-        # Get duration
-        cap = cv2.VideoCapture(input_video)
-        fps = cap.get(cv2.CAP_PROP_FPS)
-        frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        duration = frame_count / fps
-        cap.release()
+        # Save transcript.json
+        transcript_file = os.path.join(output_dir, "transcript.json")
+        with open(transcript_file, 'w') as f:
+            json.dump(transcript, f, indent=2)
+        print(f"   Saved transcript to {transcript_file}")
+        
+        # 3. Dossier (optional)
+        generate_dossier_flag = args.dossier is not None
+        if generate_dossier_flag:
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                print("❌ Error: GEMINI_API_KEY not found in environment variables.")
+                sys.exit(1)
+            dossier_text = generate_dossier(input_video, api_key, args.content_type)
+            dossier_file = os.path.join(output_dir, "dossier.md")
+            with open(dossier_file, 'w') as f:
+                f.write(dossier_text)
+            print(f"   Saved dossier to {dossier_file}")
+            
+        print("✅ Analyze mode finished.")
+        sys.exit(0)
 
-        # 4. Gemini Analysis
-        clips_data = get_viral_clips(transcript, duration)
+    elif args.clip:
+        print("✂️ Running in Stage 2: Clip generation mode...")
+        if not args.output:
+            print("❌ Clip mode requires -o/--output directory.")
+            sys.exit(1)
+            
+        if not args.transcript or len(args.transcript) == 0:
+            print("❌ Clip mode requires --transcript file(s).")
+            sys.exit(1)
+            
+        if not args.input or len(args.input) == 0:
+            print("❌ Clip mode requires -i/--input video file(s).")
+            sys.exit(1)
+            
+        output_dir = _ensure_dir(args.output)
+        
+        # Load all transcripts
+        transcripts = []
+        for trans_path in args.transcript:
+            if not os.path.exists(trans_path):
+                print(f"❌ Transcript file not found: {trans_path}")
+                sys.exit(1)
+            with open(trans_path, 'r') as f:
+                transcripts.append(json.load(f))
+                
+        # Load all dossiers
+        dossiers = []
+        if args.dossier and len(args.dossier) > 0:
+            for doss_path in args.dossier:
+                if os.path.exists(doss_path):
+                    with open(doss_path, 'r') as f:
+                        dossiers.append(f.read())
+                else:
+                    dossiers.append("")
+        else:
+            for trans_path in args.transcript:
+                parent_dir = os.path.dirname(trans_path)
+                doss_path = os.path.join(parent_dir, "dossier.md")
+                if os.path.exists(doss_path):
+                    with open(doss_path, 'r') as f:
+                        dossiers.append(f.read())
+                else:
+                    dossiers.append("")
+                    
+        # 1. Run Gemini for clip detection
+        api_key = os.getenv("GEMINI_API_KEY")
+        if not api_key:
+            print("❌ Error: GEMINI_API_KEY not found in environment variables.")
+            sys.exit(1)
+            
+        clips_data = detect_clips_stage2(transcripts, dossiers, args.prompt, api_key, args.content_type)
         
         if not clips_data or 'shorts' not in clips_data:
-            print("❌ Failed to identify clips. Converting whole video as fallback.")
-            output_file = os.path.join(output_dir, f"{video_title}_vertical.mp4")
+            print("❌ Failed to identify clips.")
+            sys.exit(1)
+            
+        print(f"🔥 Found {len(clips_data['shorts'])} viral clips!")
+        
+        if transcripts:
+            clips_data['transcript'] = transcripts[0]
+            
+        metadata_file = os.path.join(output_dir, "clips_metadata.json")
+        with open(metadata_file, 'w') as f:
+            json.dump(clips_data, f, indent=2)
+        print(f"   Saved metadata to {metadata_file}")
+        
+        # 2. Process each clip
+        for i, clip in enumerate(clips_data['shorts']):
+            video_idx = clip.get('video_index', 0)
+            if video_idx >= len(args.input):
+                print(f"⚠️ Warning: video_index {video_idx} out of range for clip {i+1}. Defaulting to index 0.")
+                video_idx = 0
+            
+            input_video = args.input[video_idx]
+            video_title = os.path.splitext(os.path.basename(input_video))[0]
+            
+            start = clip['start']
+            end = clip['end']
+            print(f"\n🎬 Processing Clip {i+1} from Video {video_idx} ({video_title}): {start}s - {end}s")
+            print(f"   Title: {clip.get('video_title_for_youtube_short', 'No Title')}")
+            
+            # Cut clip — use output dir name as base for consistent naming
+            dir_name = os.path.basename(output_dir)
+            clip_filename = f"{dir_name}_clip_{i+1}.mp4"
+            clip_temp_path = os.path.join(output_dir, f"temp_{clip_filename}")
+            clip_final_path = os.path.join(output_dir, clip_filename)
+            
+            # ffmpeg cut
+            cut_command = [
+                'ffmpeg', '-y', 
+                '-ss', str(start), 
+                '-to', str(end), 
+                '-i', input_video,
+                '-c:v', 'libx264', '-crf', '18', '-preset', 'fast',
+                '-c:a', 'aac',
+                clip_temp_path
+            ]
+            subprocess.run(cut_command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            
+            # Process vertical
+            success = process_video_to_vertical(clip_temp_path, clip_final_path)
+            
+            if success:
+                print(f"   ✅ Clip {i+1} ready: {clip_final_path}")
+            
+            # Clean up temp cut
+            if os.path.exists(clip_temp_path):
+                os.remove(clip_temp_path)
+                
+        print("✅ Clip mode finished.")
+        sys.exit(0)
+
+    else:
+        # Legacy pipeline mode (both analyze and clip at once)
+        # 1. Get Input Video
+        if args.url:
+            if args.output and not args.skip_analysis:
+                output_dir = _ensure_dir(args.output)
+            else:
+                if args.output and os.path.isdir(args.output):
+                    output_dir = args.output
+                elif args.output and not os.path.isdir(args.output):
+                    output_dir = os.path.dirname(args.output) or "."
+                else:
+                    output_dir = "."
+            
+            input_video, video_title = download_youtube_video(args.url, output_dir)
+        else:
+            input_video = args.input[0] if isinstance(args.input, list) else args.input
+            video_title = os.path.splitext(os.path.basename(input_video))[0]
+            
+            if args.output and not args.skip_analysis:
+                output_dir = _ensure_dir(args.output)
+            else:
+                if args.output and os.path.isdir(args.output):
+                    output_dir = args.output
+                elif args.output and not os.path.isdir(args.output):
+                    output_dir = os.path.dirname(args.output) or os.path.dirname(input_video)
+                else:
+                    output_dir = os.path.dirname(input_video)
+
+        if not os.path.exists(input_video):
+            print(f"❌ Input file not found: {input_video}")
+            exit(1)
+
+        # 2. Decision: Analyze clips or process whole?
+        if args.skip_analysis:
+            print("⏩ Skipping analysis, processing entire video...")
+            output_file = args.output if args.output else os.path.join(output_dir, f"{video_title}_vertical.mp4")
             process_video_to_vertical(input_video, output_file)
         else:
-            print(f"🔥 Found {len(clips_data['shorts'])} viral clips!")
+            # 3. Transcribe
+            transcript = transcribe_video(input_video)
+            duration = get_video_duration(input_video)
+
+            # 4. Gemini Analysis
+            clips_data = get_viral_clips(transcript, duration, args.content_type)
             
-            # Save metadata
-            clips_data['transcript'] = transcript # Save full transcript for subtitles
-            metadata_file = os.path.join(output_dir, f"{video_title}_metadata.json")
-            with open(metadata_file, 'w') as f:
-                json.dump(clips_data, f, indent=2)
-            print(f"   Saved metadata to {metadata_file}")
+            if not clips_data or 'shorts' not in clips_data:
+                print("❌ Failed to identify clips. Converting whole video as fallback.")
+                output_file = os.path.join(output_dir, f"{video_title}_vertical.mp4")
+                process_video_to_vertical(input_video, output_file)
+            else:
+                print(f"🔥 Found {len(clips_data['shorts'])} viral clips!")
+                
+                # Save metadata
+                clips_data['transcript'] = transcript
+                metadata_file = os.path.join(output_dir, f"{video_title}_metadata.json")
+                with open(metadata_file, 'w') as f:
+                    json.dump(clips_data, f, indent=2)
+                print(f"   Saved metadata to {metadata_file}")
 
-            # 5. Process each clip
-            for i, clip in enumerate(clips_data['shorts']):
-                start = clip['start']
-                end = clip['end']
-                print(f"\n🎬 Processing Clip {i+1}: {start}s - {end}s")
-                print(f"   Title: {clip.get('video_title_for_youtube_short', 'No Title')}")
-                
-                # Cut clip
-                clip_filename = f"{video_title}_clip_{i+1}.mp4"
-                clip_temp_path = os.path.join(output_dir, f"temp_{clip_filename}")
-                clip_final_path = os.path.join(output_dir, clip_filename)
-                
-                # ffmpeg cut
-                # Using re-encoding for precision as requested by strict seconds
-                cut_command = [
-                    'ffmpeg', '-y', 
-                    '-ss', str(start), 
-                    '-to', str(end), 
-                    '-i', input_video,
-                    '-c:v', 'libx264', '-crf', '18', '-preset', 'fast',
-                    '-c:a', 'aac',
-                    clip_temp_path
-                ]
-                subprocess.run(cut_command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-                
-                # Process vertical
-                success = process_video_to_vertical(clip_temp_path, clip_final_path)
-                
-                if success:
-                    print(f"   ✅ Clip {i+1} ready: {clip_final_path}")
-                
-                # Clean up temp cut
-                if os.path.exists(clip_temp_path):
-                    os.remove(clip_temp_path)
+                # 5. Process each clip
+                for i, clip in enumerate(clips_data['shorts']):
+                    start = clip['start']
+                    end = clip['end']
+                    print(f"\n🎬 Processing Clip {i+1}: {start}s - {end}s")
+                    print(f"   Title: {clip.get('video_title_for_youtube_short', 'No Title')}")
+                    
+                    # Cut clip
+                    clip_filename = f"{video_title}_clip_{i+1}.mp4"
+                    clip_temp_path = os.path.join(output_dir, f"temp_{clip_filename}")
+                    clip_final_path = os.path.join(output_dir, clip_filename)
+                    
+                    # ffmpeg cut
+                    cut_command = [
+                        'ffmpeg', '-y', 
+                        '-ss', str(start), 
+                        '-to', str(end), 
+                        '-i', input_video,
+                        '-c:v', 'libx264', '-crf', '18', '-preset', 'fast',
+                        '-c:a', 'aac',
+                        clip_temp_path
+                    ]
+                    subprocess.run(cut_command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+                    
+                    # Process vertical
+                    success = process_video_to_vertical(clip_temp_path, clip_final_path)
+                    
+                    if success:
+                        print(f"   ✅ Clip {i+1} ready: {clip_final_path}")
+                    
+                    # Clean up temp cut
+                    if os.path.exists(clip_temp_path):
+                        os.remove(clip_temp_path)
 
-    # Clean up original if requested
-    if args.url and not args.keep_original and os.path.exists(input_video):
-        os.remove(input_video)
-        print(f"🗑️  Cleaned up downloaded video.")
+        # Clean up original if requested
+        if args.url and not args.keep_original and os.path.exists(input_video):
+            os.remove(input_video)
+            print(f"🗑️  Cleaned up downloaded video.")
 
-    total_time = time.time() - script_start_time
-    print(f"\n⏱️  Total execution time: {total_time:.2f}s")
+        total_time = time.time() - script_start_time
+        print(f"\n⏱️  Total execution time: {total_time:.2f}s")
+

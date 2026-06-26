@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Upload, FileVideo, Sparkles, Youtube, Instagram, Share2, LogOut, ChevronDown, Check, Activity, LayoutDashboard, Settings, PlusCircle, History, Menu, X, Terminal, Shield, LayoutGrid, Image, Globe, RotateCcw, Calendar, AlertTriangle, KeyRound, Bot, Users, Smartphone, ExternalLink, Copy, CheckCircle2 } from 'lucide-react';
+import { Upload, FileVideo, Sparkles, Youtube, Instagram, Share2, LogOut, ChevronDown, Check, Activity, LayoutDashboard, Settings, PlusCircle, History, Menu, X, Terminal, Shield, LayoutGrid, Image, Globe, RotateCcw, Calendar, AlertTriangle, KeyRound, Bot, Users, Smartphone, ExternalLink, Copy, CheckCircle2, Trash2, Clock } from 'lucide-react';
 import KeyInput from './components/KeyInput';
 import MediaInput from './components/MediaInput';
 import ResultCard from './components/ResultCard';
@@ -10,6 +10,7 @@ import SaaShortsTab from './components/SaaShortsTab';
 import UGCGallery from './components/UGCGallery';
 import ScheduleWeekModal from './components/ScheduleWeekModal';
 import { getApiUrl } from './config';
+import ProjectDetail from './components/ProjectDetail';
 
 // Enhanced "Encryption" using XOR + Base64 with a Salt
 // This is better than plain Base64 but still client-side.
@@ -165,6 +166,80 @@ function App() {
   const [logsVisible, setLogsVisible] = useState(true);
   const [processingMedia, setProcessingMedia] = useState(null);
   const [activeTab, setActiveTab] = useState('dashboard'); // dashboard, settings
+  
+  // Projects platform states
+  const [projects, setProjects] = useState([]);
+  const [currentProject, setCurrentProject] = useState(null);
+  const [showNewProjectModal, setShowNewProjectModal] = useState(false);
+  const [newProjectName, setNewProjectName] = useState('');
+  const [dossierEnabled, setDossierEnabled] = useState(false);
+  const [retentionDays, setRetentionDays] = useState(7);
+  const [newProjectContentType, setNewProjectContentType] = useState('general');
+  const [newProjectInstructions, setNewProjectInstructions] = useState('');
+
+  const fetchProjects = async () => {
+    try {
+      const res = await fetch(getApiUrl('/api/projects'));
+      if (res.ok) {
+        const data = await res.json();
+        setProjects(data.projects || []);
+      }
+    } catch (e) {
+      console.error("Failed to fetch projects", e);
+    }
+  };
+
+  useEffect(() => {
+    fetchProjects();
+  }, []);
+
+  const handleCreateProject = async (e) => {
+    e.preventDefault();
+    if (!newProjectName.trim()) return;
+    try {
+      const res = await fetch(getApiUrl('/api/projects'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: newProjectName,
+          dossier_enabled: dossierEnabled,
+          retention_days: retentionDays,
+          content_type: newProjectContentType,
+          custom_instructions: newProjectInstructions.trim() || null
+        })
+      });
+      if (res.ok) {
+        const newProj = await res.json();
+        setProjects(prev => [newProj, ...prev]);
+        setNewProjectName('');
+        setDossierEnabled(false);
+        setRetentionDays(7);
+        setNewProjectContentType('general');
+        setNewProjectInstructions('');
+        setShowNewProjectModal(false);
+      }
+    } catch (e) {
+      console.error("Failed to create project", e);
+    }
+  };
+
+  const handleDeleteProject = async (projectId, e) => {
+    e.stopPropagation();
+    if (!confirm("Are you sure you want to delete this project and all its videos and clips? This is irreversible.")) return;
+    try {
+      const res = await fetch(getApiUrl(`/api/projects/${projectId}`), {
+        method: 'DELETE'
+      });
+      if (res.ok) {
+        setProjects(prev => prev.filter(p => p.id !== projectId));
+        if (currentProject && currentProject.id === projectId) {
+          setCurrentProject(null);
+        }
+      }
+    } catch (e) {
+      console.error("Failed to delete project", e);
+    }
+  };
 
   const [sessionRecovered, setSessionRecovered] = useState(false);
   const [showScheduleWeek, setShowScheduleWeek] = useState(false);
@@ -321,7 +396,7 @@ function App() {
   };
 
   const handleProcess = async (data) => {
-    if (!apiKey || !uploadPostKey) {
+    if (!apiKey) {
       setShowKeyModal(true);
       return;
     }
@@ -382,11 +457,11 @@ function App() {
 
       <nav className="flex-1 px-4 py-4 space-y-2">
         <button
-          onClick={() => setActiveTab('dashboard')}
+          onClick={() => { setActiveTab('dashboard'); setCurrentProject(null); }}
           className={`w-full flex items-center gap-3 px-3 py-3 rounded-xl transition-colors ${activeTab === 'dashboard' ? 'bg-primary/10 text-primary' : 'text-zinc-400 hover:text-white hover:bg-white/5'}`}
         >
           <LayoutDashboard size={20} />
-          <span className="font-medium hidden lg:block">Clip Generator</span>
+          <span className="font-medium hidden lg:block">Projects</span>
         </button>
 
         <button
@@ -503,36 +578,28 @@ function App() {
               />
             )}
 
-            {(!apiKey || !uploadPostKey) && (
+            {!apiKey && (
               <button
                 onClick={() => setActiveTab('settings')}
                 className="text-xs text-amber-400 bg-amber-500/10 hover:bg-amber-500/20 px-3 py-1 rounded-full border border-amber-500/30 transition-colors flex items-center gap-1.5"
                 title="Click to configure your API keys"
               >
                 <AlertTriangle size={12} />
-                {!apiKey && !uploadPostKey
-                  ? 'Gemini & Upload-Post keys missing'
-                  : !apiKey
-                    ? 'Gemini API Key Missing'
-                    : 'Upload-Post API Key Missing'}
+                Gemini API Key Missing
               </button>
             )}
           </div>
         </header>
 
         {/* Persistent Missing Keys Banner — visible on every screen */}
-        {(!apiKey || !uploadPostKey) && activeTab !== 'settings' && (
+        {!apiKey && activeTab !== 'settings' && (
           <div className="mx-6 mt-3 p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-center justify-between gap-4 shrink-0 animate-[fadeIn_0.3s_ease-out]">
             <div className="flex items-center gap-3 text-sm text-amber-200">
               <KeyRound size={16} className="shrink-0 text-amber-400" />
               <div>
-                <span className="font-semibold">Required API keys missing.</span>{' '}
+                <span className="font-semibold">Required API key missing.</span>{' '}
                 <span className="text-amber-200/80">
-                  {!apiKey && !uploadPostKey
-                    ? 'Set your Gemini and Upload-Post API keys to use OpenShorts.'
-                    : !apiKey
-                      ? 'Set your Gemini API key to use OpenShorts.'
-                      : 'Set your Upload-Post API key to use OpenShorts.'}
+                  Set your Gemini API key to use OpenShorts.
                 </span>
               </div>
             </div>
@@ -573,13 +640,13 @@ function App() {
               </div>
               <KeyInput onKeySet={setApiKey} savedKey={apiKey} />
 
-              <div className={`glass-panel p-6 mt-8 ${!uploadPostKey ? 'border-amber-500/30 ring-1 ring-amber-500/20' : ''}`}>
+              <div className="glass-panel p-6 mt-8">
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="text-lg font-semibold">Social Integration</h2>
-                  <span className="text-[10px] bg-amber-500/10 border border-amber-500/30 px-2 py-0.5 rounded text-amber-400 uppercase tracking-wider">Required</span>
+                  <span className="text-[10px] bg-white/5 border border-white/10 px-2 py-0.5 rounded text-zinc-400 uppercase tracking-wider">Optional</span>
                 </div>
                 <p className="text-xs text-zinc-500 mb-6 leading-relaxed">
-                  Required to publish your clips to TikTok, Instagram Reels, and YouTube Shorts via <strong>Upload-Post</strong>.
+                  Optional. Required ONLY to publish your clips directly to TikTok, Instagram Reels, and YouTube Shorts via <strong>Upload-Post</strong>.
                   Includes a <strong>free tier</strong> (no credit card required).
                 </p>
                 <div className="space-y-4">
@@ -776,7 +843,7 @@ function App() {
                     </div>
                     <h3 className="font-semibold text-white">2. AI clippers work</h3>
                     <p className="text-xs text-zinc-400 leading-relaxed">
-                      Whisper transcribes, Gemini 3 Flash spots viral beats, FFmpeg cuts each clip and adds a hook overlay.
+                      Whisper transcribes, Gemini 3.5 Flash spots viral beats, FFmpeg cuts each clip and adds a hook overlay.
                     </p>
                   </div>
 
@@ -832,7 +899,7 @@ function App() {
                     </div>
                     <div className="flex items-start gap-2 text-zinc-300">
                       <Check size={16} className="text-emerald-400 shrink-0 mt-0.5" />
-                      <span>Gemini 3 Flash multimodal moment detection</span>
+                      <span>Gemini 3.5 Flash multimodal moment detection</span>
                     </div>
                     <div className="flex items-start gap-2 text-zinc-300">
                       <Check size={16} className="text-emerald-400 shrink-0 mt-0.5" />
@@ -860,146 +927,196 @@ function App() {
             <Gallery />
           )} */}
 
-          {/* View: Dashboard (Idle) */}
-          {activeTab === 'dashboard' && status === 'idle' && (
-            <div className="h-full flex flex-col items-center justify-center p-6 animate-[fadeIn_0.3s_ease-out]">
-              <div className="max-w-xl w-full text-center space-y-8">
-                <div className="space-y-4">
-                  <h1 className="text-4xl md:text-5xl font-black bg-gradient-to-b from-white to-white/60 bg-clip-text text-transparent">
-                    Create Viral Shorts
-                  </h1>
-                  <p className="text-zinc-400 text-lg">
-                    Drop your long-form video below to instantly generate viral clips with AI.
-                  </p>
+          {/* View: Projects list or Project Detail */}
+          {activeTab === 'dashboard' && (
+            currentProject ? (
+              <ProjectDetail
+                project={currentProject}
+                onBack={() => { setCurrentProject(null); fetchProjects(); }}
+                geminiApiKey={apiKey}
+                uploadPostKey={uploadPostKey}
+                uploadUserId={uploadUserId}
+                elevenLabsKey={elevenLabsKey}
+                onPlayClip={handleClipPlay}
+                onPauseClip={handleClipPause}
+                onProjectUpdated={(updated) => setCurrentProject(updated)}
+              />
+            ) : (
+              <div className="h-full flex flex-col p-6 animate-[fadeIn_0.3s_ease-out] overflow-y-auto custom-scrollbar">
+                <div className="flex items-center justify-between border-b border-white/5 pb-4 mb-6 shrink-0">
+                  <div>
+                    <span className="text-xs text-primary font-semibold tracking-wider uppercase">Content Platform</span>
+                    <h1 className="text-3xl font-black text-white">Your Projects</h1>
+                  </div>
+                  <button
+                    onClick={() => setShowNewProjectModal(true)}
+                    className="flex items-center gap-2 px-4 py-2.5 bg-primary text-black hover:bg-primary/95 text-sm font-bold rounded-xl transition-all shadow-lg shadow-primary/10"
+                  >
+                    <PlusCircle size={16} />
+                    New Project
+                  </button>
                 </div>
 
-                <MediaInput onProcess={handleProcess} isProcessing={status === 'processing'} />
-
-                <div className="flex items-center justify-center gap-8 text-zinc-500 text-sm">
-                  <span className="flex items-center gap-2"><Youtube size={16} /> YouTube</span>
-                  <span className="flex items-center gap-2"><Instagram size={16} /> Instagram</span>
-                  <span className="flex items-center gap-2"><TikTokIcon size={16} /> TikTok</span>
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* View: Processing / Results (Split View) */}
-          {activeTab === 'dashboard' && (status === 'processing' || status === 'complete' || status === 'error') && (
-            <div className="h-full flex flex-col md:flex-row animate-[fadeIn_0.3s_ease-out]">
-
-              {/* Left Panel: Preview & Status */}
-              <div className={`${status === 'complete' ? 'w-full md:w-[30%] lg:w-[25%]' : 'w-full md:w-[55%] lg:w-[60%]'} h-full flex flex-col border-r border-white/5 bg-black/20 p-6 overflow-y-auto custom-scrollbar transition-all duration-700 ease-in-out`}>
-                <div className="mb-6 flex items-center justify-between">
-                  <h2 className="text-lg font-semibold flex items-center gap-2">
-                    <Activity className={`text-primary ${status === 'processing' ? 'animate-pulse' : ''}`} size={20} />
-                    Live Analysis
-                  </h2>
-                  <span className={`text-xs px-2 py-1 rounded-full border ${status === 'processing' ? 'bg-primary/10 border-primary/20 text-primary' :
-                    status === 'complete' ? 'bg-green-500/10 border-green-500/20 text-green-400' :
-                      'bg-red-500/10 border-red-500/20 text-red-400'
-                    }`}>
-                    {status.toUpperCase()}
-                  </span>
-                </div>
-
-                {/* Video Preview */}
-                {processingMedia && (
-                  <ProcessingAnimation
-                    media={processingMedia}
-                    isComplete={status === 'complete'}
-                    syncedTime={syncedTime}
-                    isSyncedPlaying={isSyncedPlaying}
-                    syncTrigger={syncTrigger}
-                  />
-                )}
-
-                {/* Logs Terminal */}
-                <div className={`bg-[#0c0c0e] rounded-xl border border-white/10 overflow-hidden flex flex-col transition-all duration-500 ${status === 'complete' ? 'h-32 min-h-0 opacity-50 hover:opacity-100' : 'flex-1 min-h-[200px]'}`}>
-                  <div className="px-4 py-2 border-b border-white/5 flex items-center justify-between bg-white/5 shrink-0">
-                    <span className="text-xs font-mono text-zinc-400 flex items-center gap-2">
-                      <Terminal size={12} /> System Logs
-                    </span>
-                    <button onClick={() => setLogsVisible(!logsVisible)} className="text-zinc-500 hover:text-white transition-colors">
-                      {logsVisible ? <ChevronDown size={14} /> : <ChevronDown size={14} className="rotate-180" />}
+                {/* Projects Grid */}
+                {projects.length === 0 ? (
+                  <div className="flex-1 flex flex-col items-center justify-center text-zinc-500 py-20">
+                    <LayoutDashboard size={48} className="text-zinc-700 mb-4" />
+                    <h3 className="text-lg font-bold text-zinc-400 mb-1">No projects yet</h3>
+                    <p className="text-sm max-w-xs text-center leading-relaxed mb-6">
+                      Create your first project to start analyzing videos and clipping viral moments.
+                    </p>
+                    <button
+                      onClick={() => setShowNewProjectModal(true)}
+                      className="px-4 py-2 bg-white/5 hover:bg-white/10 text-white border border-white/10 text-xs font-bold rounded-xl transition-all"
+                    >
+                      Create Project
                     </button>
                   </div>
-                  {logsVisible && (
-                    <div className="flex-1 p-4 overflow-y-auto font-mono text-xs space-y-1.5 custom-scrollbar text-zinc-400">
-                      {logs.map((log, i) => (
-                        <div key={i} className={`flex gap-2 ${log.toLowerCase().includes('error') ? 'text-red-400' : 'text-zinc-400'}`}>
-                          <span className="text-zinc-700 shrink-0">{new Date().toLocaleTimeString()}</span>
-                          <span>{log}</span>
+                ) : (
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6 pb-10">
+                    {projects.map((proj) => (
+                      <div
+                        key={proj.id}
+                        onClick={() => setCurrentProject(proj)}
+                        className="group border border-white/5 bg-white/[0.02] hover:bg-white/[0.04] hover:border-white/10 p-5 rounded-2xl cursor-pointer transition-all flex flex-col justify-between h-[180px]"
+                      >
+                        <div>
+                          <div className="flex items-start justify-between">
+                            <h3 className="text-lg font-bold text-white group-hover:text-primary transition-colors truncate max-w-[85%]">
+                              {proj.name}
+                            </h3>
+                            <button
+                              onClick={(e) => handleDeleteProject(proj.id, e)}
+                              className="p-1.5 text-zinc-500 hover:text-red-400 hover:bg-red-500/10 rounded-lg opacity-0 group-hover:opacity-100 transition-all"
+                            >
+                              <Trash2 size={14} />
+                            </button>
+                          </div>
+                          
+                          <div className="flex items-center gap-3 mt-3 text-xs text-zinc-500">
+                            <span className="flex items-center gap-1.5"><FileVideo size={14} /> {proj.video_count} videos</span>
+                            <span className="w-1 h-1 rounded-full bg-zinc-700" />
+                            <span className="flex items-center gap-1.5"><Sparkles size={14} /> {proj.clip_count} clip runs</span>
+                          </div>
                         </div>
-                      ))}
-                      {status === 'processing' && (
-                        <div className="animate-pulse text-primary/70">_</div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              </div>
 
-              {/* Right Panel: Results Grid */}
-              <div className={`${status === 'complete' ? 'w-full md:w-[70%] lg:w-[75%]' : 'w-full md:w-[45%] lg:w-[40%]'} h-full flex flex-col bg-background p-6 transition-all duration-700 ease-in-out`}>
-                <h2 className="text-lg font-semibold mb-6 flex items-center gap-2 shrink-0">
-                  <Sparkles className="text-yellow-400" size={20} />
-                  Generated Shorts
-                  {results?.clips?.length > 0 && (
-                    <span className="text-xs bg-white/10 text-white px-2 py-0.5 rounded-full ml-auto">
-                      {results.clips.length} Clips
-                    </span>
-                  )}
-                  {results?.cost_analysis && (
-                    <span className="text-xs bg-green-500/10 border border-green-500/20 text-green-400 px-2 py-0.5 rounded-full ml-2" title={`Input: ${results.cost_analysis.input_tokens} | Output: ${results.cost_analysis.output_tokens}`}>
-                      ${results.cost_analysis.total_cost.toFixed(5)}
-                    </span>
-                  )}
-                  {results?.clips?.length > 1 && status === 'complete' && (
-                    <button
-                      onClick={() => setShowScheduleWeek(true)}
-                      className="ml-auto flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-purple-500/20 to-indigo-500/20 hover:from-purple-500/30 hover:to-indigo-500/30 border border-purple-500/30 text-purple-300 hover:text-purple-200 rounded-full text-xs font-bold transition-all"
-                    >
-                      <Calendar size={14} />
-                      Programar Semana
-                    </button>
-                  )}
-                </h2>
-
-                <div className="flex-1 overflow-y-auto custom-scrollbar p-1">
-                  {results && results.clips && results.clips.length > 0 ? (
-                    <div className={`grid gap-4 pb-10 ${status === 'complete' ? 'grid-cols-1 xl:grid-cols-2' : 'grid-cols-1'}`}>
-                      {results.clips.map((clip, i) => (
-                        <ResultCard
-                          key={i}
-                          clip={clip}
-                          index={i}
-                          jobId={jobId}
-                          uploadPostKey={uploadPostKey}
-                          uploadUserId={uploadUserId}
-                          geminiApiKey={apiKey}
-                          elevenLabsKey={elevenLabsKey}
-                          onPlay={(time) => handleClipPlay(time)}
-                          onPause={handleClipPause}
-                        />
-                      ))}
-                    </div>
-                  ) : (
-                    status === 'processing' ? (
-                      <div className="h-full flex flex-col items-center justify-center text-zinc-500 space-y-4 opacity-50">
-                        <div className="w-12 h-12 rounded-full border-2 border-zinc-800 border-t-primary animate-spin" />
-                        <p className="text-sm">Waiting for clips...</p>
+                        <div className="border-t border-white/5 pt-4 flex items-center justify-between text-[11px] text-zinc-400">
+                          <span className="flex items-center gap-1"><Clock size={12} /> {proj.retention_days} days retention</span>
+                          <span className={`px-2 py-0.5 rounded border ${proj.dossier_enabled ? 'bg-primary/10 border-primary/20 text-primary' : 'bg-white/5 border-white/5 text-zinc-500'}`}>
+                            {proj.dossier_enabled ? 'Dossier' : 'No Dossier'}
+                          </span>
+                        </div>
                       </div>
-                    ) : status === 'error' ? (
-                      <div className="h-full flex flex-col items-center justify-center text-red-400 space-y-2">
-                        <p>Generation failed.</p>
-                      </div>
-                    ) : null
-                  )}
-                </div>
-              </div>
+                    ))}
+                  </div>
+                )}
 
-            </div>
+                {/* New Project Modal */}
+                {showNewProjectModal && (
+                  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm animate-[fadeIn_0.2s_ease-out]">
+                    <div className="bg-surface border border-white/10 rounded-2xl p-6 max-w-md w-full mx-4 shadow-2xl relative" onClick={(e) => e.stopPropagation()}>
+                      <button 
+                        onClick={() => setShowNewProjectModal(false)}
+                        className="absolute top-4 right-4 p-1 hover:bg-white/10 rounded-full text-zinc-400 hover:text-white transition-colors"
+                      >
+                        <X size={18} />
+                      </button>
+                      
+                      <h2 className="text-xl font-black text-white mb-6">Create New Project</h2>
+                      
+                      <form onSubmit={handleCreateProject} className="space-y-5">
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider">Project Name</label>
+                          <input
+                            type="text"
+                            required
+                            placeholder="e.g. My Podcast, Tech Reviews"
+                            value={newProjectName}
+                            onChange={(e) => setNewProjectName(e.target.value)}
+                            className="input-field text-sm"
+                          />
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider">Content Type</label>
+                          <select
+                            value={newProjectContentType}
+                            onChange={(e) => setNewProjectContentType(e.target.value)}
+                            className="w-full bg-white/5 border border-zinc-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-primary/50 cursor-pointer"
+                          >
+                            <option value="general" className="bg-[#121214]">🎬 General</option>
+                            <option value="sports" className="bg-[#121214]">🏆 Sports</option>
+                            <option value="podcast" className="bg-[#121214]">🎙️ Podcast</option>
+                            <option value="lecture" className="bg-[#121214]">🎓 Lecture / Tutorial</option>
+                            <option value="gaming" className="bg-[#121214]">🎮 Gaming</option>
+                            <option value="interview" className="bg-[#121214]">🎤 Interview</option>
+                          </select>
+                          <p className="text-[10px] text-zinc-500 mt-1">Guides Gemini's clip detection vocabulary for this content.</p>
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider">Retention Period</label>
+                          <select
+                            value={retentionDays}
+                            onChange={(e) => setRetentionDays(Number(e.target.value))}
+                            className="w-full bg-white/5 border border-zinc-700 rounded-xl px-4 py-2.5 text-sm text-white focus:outline-none focus:border-primary/50 cursor-pointer"
+                          >
+                            <option value={1} className="bg-[#121214]">1 Day</option>
+                            <option value={3} className="bg-[#121214]">3 Days</option>
+                            <option value={7} className="bg-[#121214]">7 Days</option>
+                            <option value={14} className="bg-[#121214]">14 Days</option>
+                            <option value={30} className="bg-[#121214]">30 Days</option>
+                          </select>
+                          <p className="text-[10px] text-zinc-500 mt-1">Videos and clips are automatically deleted from storage after this duration.</p>
+                        </div>
+
+                        <div className="flex items-center justify-between p-3.5 bg-white/5 border border-white/5 rounded-xl">
+                          <div>
+                            <label className="text-xs font-bold text-white">Enable Visual Dossier</label>
+                            <p className="text-[10px] text-zinc-400 mt-0.5">Generate a visual analysis of events & people with Gemini.</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setDossierEnabled(!dossierEnabled)}
+                            className={`w-11 h-6 rounded-full p-1 transition-colors duration-300 focus:outline-none ${dossierEnabled ? 'bg-primary' : 'bg-zinc-700'}`}
+                          >
+                            <div className={`bg-black w-4 h-4 rounded-full shadow-md transform transition-transform duration-300 ${dossierEnabled ? 'translate-x-5' : 'translate-x-0'}`} />
+                          </button>
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider">Standing Instructions <span className="text-zinc-600 normal-case font-normal">(optional)</span></label>
+                          <textarea
+                            rows={3}
+                            placeholder={`e.g. "Always include the coach's reaction. Prioritise dunks over assists. Minimum 20s clips."`}
+                            value={newProjectInstructions}
+                            onChange={(e) => setNewProjectInstructions(e.target.value)}
+                            className="w-full bg-white/5 border border-zinc-700 rounded-xl px-4 py-2.5 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-primary/50 resize-none"
+                          />
+                          <p className="text-[10px] text-zinc-500 mt-1">Automatically appended to every clip job in this project. Can be overridden per-job.</p>
+                        </div>
+
+                        <div className="flex gap-3 pt-3 border-t border-white/5">
+                          <button
+                            type="button"
+                            onClick={() => setShowNewProjectModal(false)}
+                            className="flex-1 px-4 py-2.5 border border-white/10 hover:bg-white/5 text-sm font-bold text-white rounded-xl transition-all"
+                          >
+                            Cancel
+                          </button>
+                          <button
+                            type="submit"
+                            className="flex-1 px-4 py-2.5 bg-primary hover:bg-primary/95 text-sm font-bold text-black rounded-xl transition-all"
+                          >
+                            Create
+                          </button>
+                        </div>
+                      </form>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )
           )}
 
         </div>
@@ -1011,14 +1128,10 @@ function App() {
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={() => setShowKeyModal(false)}>
           <div className="bg-[#18181b] border border-white/10 rounded-2xl p-6 max-w-md w-full mx-4 space-y-4 shadow-2xl" onClick={(e) => e.stopPropagation()}>
             <h2 className="text-lg font-bold text-white">
-              {!apiKey && !uploadPostKey
-                ? 'Required API Keys Missing'
-                : !apiKey
-                  ? 'Gemini API Key Required'
-                  : 'Upload-Post API Key Required'}
+              {!apiKey ? 'Required API Key Missing' : 'Gemini API Key Required'}
             </h2>
             <p className="text-sm text-zinc-400">
-              OpenShorts needs both a <strong className="text-zinc-200">Gemini</strong> API key and an <strong className="text-zinc-200">Upload-Post</strong> API key. Both have free tiers.
+              OpenShorts needs a <strong className="text-zinc-200">Gemini</strong> API key to perform clip detection and dossier generation.
             </p>
 
             {/* Gemini block */}
@@ -1050,15 +1163,15 @@ function App() {
             </div>
 
             {/* Upload-Post block */}
-            <div className={`rounded-lg p-4 space-y-2 border ${!uploadPostKey ? 'bg-violet-500/5 border-violet-500/30' : 'bg-white/5 border-white/10 opacity-70'}`}>
+            <div className="rounded-lg p-4 space-y-2 border bg-white/5 border-white/10 opacity-70">
               <p className="text-xs font-semibold text-zinc-200 flex items-center gap-2">
-                {uploadPostKey ? <Check size={12} className="text-green-400" /> : <AlertTriangle size={12} className="text-amber-400" />}
-                Upload-Post API Key {uploadPostKey && <span className="text-green-400">— set</span>}
+                {uploadPostKey ? <Check size={12} className="text-green-400" /> : <span className="w-3 h-3 rounded-full bg-zinc-600 inline-block" />}
+                Upload-Post API Key <span className="text-zinc-400 font-normal">(optional for auto-posting)</span> {uploadPostKey && <span className="text-green-400">— set</span>}
               </p>
               {!uploadPostKey && (
                 <>
                   <p className="text-xs text-zinc-400">
-                    Required to publish your clips to TikTok, Instagram Reels, and YouTube Shorts. Free tier available, no credit card needed.
+                    Required ONLY if you want to publish your clips directly to TikTok, Instagram Reels, and YouTube Shorts.
                   </p>
                   <ol className="text-xs text-zinc-400 space-y-1 list-decimal list-inside">
                     <li>Register at <a href="https://app.upload-post.com/login" target="_blank" rel="noopener noreferrer" className="text-violet-400 underline">app.upload-post.com</a></li>
@@ -1068,7 +1181,7 @@ function App() {
                   </ol>
                   <input
                     type="text"
-                    placeholder="Paste your Upload-Post API key here..."
+                    placeholder="Paste your Upload-Post API key (optional)..."
                     className="w-full bg-black/50 border border-white/20 rounded-lg px-4 py-2.5 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-violet-500"
                     onKeyDown={(e) => {
                       if (e.key === 'Enter' && e.target.value.trim()) {

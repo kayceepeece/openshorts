@@ -1,0 +1,18 @@
+## LECTURE/EDUCATIONAL CLIP SELECTION CRITERIA (Layered on top of Universal Rules)
+
+In lectures, presentations, and educational content, clips should isolate clear explanations, "aha!" moments, and surprising facts.
+
+### 1. HOOK SIGNAL (First 2-3s)
+- **The Problem Statement**: "Why do we always get this wrong?" or "This is the hardest problem in physics."
+- **The Surprising Fact**: "Did you know that gravity isn't actually a force?"
+- **Immediate Curiosity**: A question that challenges common knowledge.
+
+### 2. PAYOFF SIGNAL (The Climax & Resolution)
+- **The "Aha!" / Concept Click**: The speaker finishes the explanation or uses an analogy that makes the concept clear.
+- **The Practical Takeaway**: How this information applies to real life or changes how you think.
+- **The Summary Formula**: A single, concise sentence summing up the lesson.
+
+### 3. PACING & SEGMENT BOUNDARIES
+- Lectures have slower pacing; you may need to widen the clip (up to 60s) to fit the full explanation.
+- Do not cut in the middle of a mathematical proof or explanation unless it functions as a teaser.
+- Ensure all technical terms used in the clip are explained within the same clip.

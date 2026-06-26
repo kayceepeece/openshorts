@@ -1,0 +1,107 @@
+## CLIP SELECTION FRAMEWORK — UNIVERSAL VIRALITY RULES
+## Distilled from professional clip editor methodology (How To Clip)
+## These rules apply to ALL content types. Domain-specific rules layer on top.
+
+---
+
+### RULE 1 — THE HOOK (Most Critical)
+
+The first 2–3 seconds of a clip determine whether the viewer stays or swipes.
+A strong hook is EXACTLY ONE of:
+  A) A BOLD STATEMENT — a declarative claim that is surprising, counterintuitive, or strongly opinionated.
+     Examples: "This is the most underrated skill in basketball." / "Nobody talks about this."
+  B) A BOLD QUESTION — a question the viewer immediately wants answered.
+     Examples: "What happens if you do this every day?" / "Did you know this is illegal?"
+
+A clip FAILS the hook test if it starts with:
+  - Small talk, pleasantries, or filler ("So, uh, today we're gonna...")
+  - Context-setting that requires prior knowledge of the video
+  - Mid-sentence that doesn't land as a standalone opening
+  - A question or statement so generic it creates no curiosity
+
+HOOK RESCUE TECHNIQUE: If the best content in a segment has a weak opening but a STRONG closing statement,
+you MAY start the clip at a point slightly before that strong statement, even if it's mid-segment,
+provided the opening still makes contextual sense as a standalone clip.
+The goal: the strong statement should land within the first 5 seconds.
+
+---
+
+### RULE 2 — GET TO THE POINT IN < 10 SECONDS
+
+After the hook, the viewer will give you 5–10 seconds to prove the clip is worth their time.
+If the video hasn't delivered meaningful information, a revelation, or forward momentum by the 10-second mark,
+the clip should be rejected or re-cut to a tighter start point.
+
+This means:
+  - Dead air, filler words ("um", "uh", "like", "you know"), and repetition are CUT POINTS.
+    When you see these in the transcript, prefer starting the clip AFTER them.
+  - If the speaker re-states the same idea twice before getting to the point,
+    the clip should start at the second (clearer) statement, not the first.
+  - Preamble like "So what I wanted to talk about today is..." is always a cut point.
+    Start at the actual topic, not the announcement that it's coming.
+
+---
+
+### RULE 3 — STANDALONE CONTEXT
+
+A clip must be fully understandable to someone who has NEVER seen the source video.
+Clips that fail standalone context test:
+  - Reference people or things without identifying them ("...and then HE said...")
+  - Continue a train of thought started outside the clip window
+  - Use pronouns without antecedents that appear in the clip
+  - End on an unresolved "but here's the thing..." with the resolution outside the clip
+
+When a clip has a context problem, widen the start point to include the necessary setup,
+or narrow to a self-contained sub-segment. Never include a clip that will confuse a cold viewer.
+
+---
+
+### RULE 4 — THE COMPLETE THOUGHT ENDING
+
+Every clip must end with a RESOLVED idea — a payoff, conclusion, or punctuation moment.
+A clip FAILS the ending test if it:
+  - Trails off mid-thought ("...and that's why I think you should really consider—")
+  - Ends on a setup without the punchline
+  - Cuts mid-sentence or mid-laugh
+  - Leaves the viewer with an open question that won't be answered
+
+Strong endings include:
+  - A declarative conclusion to the argument made in the clip
+  - A punchline or moment of clear emotional release
+  - A resolved action (the dunk lands, the answer is given, the point is made)
+  - A natural pause that signals the thought is complete
+
+End the clip 0.2–0.5 seconds AFTER this resolution moment to let it breathe.
+
+---
+
+### RULE 5 — CLIP QUALITY RANKING CRITERIA
+
+When ranking clips from best to worst, score each on these factors in order:
+
+1. HOOK STRENGTH (0–3): Does the opening hook immediately create curiosity or attention?
+   3 = bold statement/question that is genuinely surprising
+   2 = decent hook but slightly generic
+   1 = weak hook, requires fixing
+   0 = no hook — clip starts with filler
+
+2. STANDALONE VALUE (0–3): Does a cold viewer understand and enjoy this without context?
+   3 = completely self-contained, adds value to anyone
+   2 = mostly standalone, minor context needed
+   1 = requires some prior knowledge
+   0 = unintelligible without the surrounding video
+
+3. PAYOFF CLARITY (0–3): Does the clip end satisfyingly?
+   3 = clear resolution, strong ending
+   2 = decent ending but slightly abrupt
+   1 = trails off or cuts early
+   0 = no payoff
+
+4. RETENTION POTENTIAL (0–3): Would a viewer watch to the end?
+   3 = pacing is tight, no dead air, consistently engaging
+   2 = one or two slow moments but mostly tight
+   1 = noticeable pacing issues
+   0 = too slow or too long
+
+Rank clips by TOTAL SCORE (max 12). Include only clips scoring ≥ 6.
+If fewer than 3 clips score ≥ 6, lower the threshold to ≥ 4 rather than returning nothing.

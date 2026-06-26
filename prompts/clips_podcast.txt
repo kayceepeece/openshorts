@@ -1,0 +1,18 @@
+## PODCAST CLIP SELECTION CRITERIA (Layered on top of Universal Rules)
+
+In podcast and talk-show content, clip selection should prioritize high-interest conversational hooks, hot takes, humor, and host/guest chemistry.
+
+### 1. HOOK SIGNAL (First 2-3s)
+- **The Bold Claim or Question**: The speaker starts with a provocative statement or a direct, engaging question.
+- **The Confession or Admissions**: "I have never told anyone this before..." or "The truth about..."
+- **Controversial Setup**: Host or guest pitching a highly opinionated topic.
+
+### 2. PAYOFF SIGNAL (The Climax & Resolution)
+- **The Hot Take / Punchline**: The main argument is delivered with conviction, or the punchline of a joke is spoken.
+- **The Reaction Payoff**: Show the other hosts/guests reacting (laughter, shock, argument, silent disbelief).
+- **The Conclusion**: The thought is fully resolved, leaving the listener with a clear understanding of the speaker's point.
+
+### 3. PACING & SEGMENT BOUNDARIES
+- Avoid starting mid-sentence unless the sentence itself is a clear hook.
+- Cut filler words and pauses strictly. Ensure the setup leads to the payoff within 15 seconds.
+- Let the final reaction (laugh, nod, agreement) breathe for 0.5s before ending.

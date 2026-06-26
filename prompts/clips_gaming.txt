@@ -1,0 +1,17 @@
+## GAMING CLIP SELECTION CRITERIA (Layered on top of Universal Rules)
+
+In gaming videos, streams, and let's plays, clips should capture high-intensity moments, clutch plays, tragic failures, and streamer reactions.
+
+### 1. HOOK SIGNAL (First 2-3s)
+- **High Tension Setup**: The streamer entering a tense fight, low health alerts, or saying "There's no way we survive this."
+- **The Outplay Start**: The start of a sequence of kills or a complex move.
+- **Auditory Alert**: Loud in-game sounds or streamer gasp.
+
+### 2. PAYOFF SIGNAL (The Climax & Resolution)
+- **The Win/Kill or Fail**: The moment the boss is defeated, the triple kill is scored, or the player spectacularly dies.
+- **The Streamer Reaction**: The streamer screaming, laughing, celebrating, or raging (throwing hands up, facepalming).
+- **The Chat/Lobby Reaction**: Any funny teammate comment or in-game victory screen.
+
+### 3. PACING & SEGMENT BOUNDARIES
+- Pacing must be extremely fast. If there is a 5-second silence during a fight, start the clip closer to the climax.
+- Keep the visual action clean. Let the reaction run fully before cutting.

@@ -1367,9 +1367,18 @@ async def get_video_status(project_id: str, video_id: str):
         raise HTTPException(status_code=404, detail="Video not found")
     
     logs = []
+    progress = None
     if video_id in jobs:
         logs = jobs[video_id].get("logs", [])[-20:]
         status = jobs[video_id].get("status", vid["status"])
+        # Parse the latest PROGRESS:n marker emitted by main.py during transcription
+        for line in reversed(jobs[video_id].get("logs", [])):
+            if line.startswith("PROGRESS:"):
+                try:
+                    progress = int(line.split(":", 1)[1])
+                except (ValueError, IndexError):
+                    progress = None
+                break
     else:
         status = vid["status"]
         logs = [f"Analysis {status}."]
@@ -1377,6 +1386,7 @@ async def get_video_status(project_id: str, video_id: str):
     return {
         "status": status,
         "logs": logs,
+        "progress": progress,
         "video": vid
     }
 

@@ -4,15 +4,9 @@ import subprocess
 import argparse
 import re
 import sys
-from scenedetect import open_video, SceneManager
-from scenedetect.detectors import ContentDetector
-from ultralytics import YOLO
-import torch
 import os
 import numpy as np
 from tqdm import tqdm
-import yt_dlp
-import mediapipe as mp
 # import whisper (replaced by faster_whisper inside function)
 from google import genai
 from dotenv import load_dotenv
@@ -105,14 +99,31 @@ OUTPUT — RETURN ONLY VALID JSON (no markdown, no comments). Order clips by pre
 """
     return prompt
 
-# Load the YOLO model once (Keep for backup or scene analysis if needed)
+# YOLO model is lazily loaded on first use to keep transcription-only jobs
+# from pulling in torch/ultralytics (large memory cost on small VPS boxes).
 YOLO_MODEL_PATH = os.environ.get("YOLO_MODEL_PATH", "yolov8n.pt")
-model = YOLO(YOLO_MODEL_PATH)
+_yolo_model = None
+
+def get_yolo_model():
+    """Load (and cache) the YOLO model on first call."""
+    global _yolo_model
+    if _yolo_model is None:
+        from ultralytics import YOLO
+        _yolo_model = YOLO(YOLO_MODEL_PATH)
+    return _yolo_model
 
 # --- MediaPipe Setup ---
-# Use standard Face Detection (BlazeFace) for speed
-mp_face_detection = mp.solutions.face_detection
-face_detection = mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5)
+# Use standard Face Detection (BlazeFace) for speed (lazily imported too)
+_face_detection = None
+
+def get_face_detection():
+    """Load (and cache) MediaPipe FaceDetection on first call."""
+    global _face_detection
+    if _face_detection is None:
+        import mediapipe as mp
+        mp_face_detection = mp.solutions.face_detection
+        _face_detection = mp_face_detection.FaceDetection(model_selection=1, min_detection_confidence=0.5)
+    return _face_detection
 
 class SmoothedCameraman:
     """
@@ -321,7 +332,7 @@ def detect_face_candidates(frame):
     """
     height, width, _ = frame.shape
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = face_detection.process(rgb_frame)
+    results = get_face_detection().process(rgb_frame)
     
     candidates = []
     
@@ -347,8 +358,8 @@ def detect_person_yolo(frame):
     Fallback: Detect largest person using YOLO when face detection fails.
     Returns [x, y, w, h] of the person's 'upper body' approximation.
     """
-    # Use the globally loaded model
-    results = model(frame, verbose=False, classes=[0]) # class 0 is person
+    # Use the lazily-loaded YOLO model (avoids torch/ultralytics import for transcribe-only runs)
+    results = get_yolo_model()(frame, verbose=False, classes=[0]) # class 0 is person
     
     if not results:
         return None
@@ -460,6 +471,8 @@ def analyze_scenes_strategy(video_path, scenes):
     return strategies
 
 def detect_scenes(video_path):
+    from scenedetect import open_video, SceneManager
+    from scenedetect.detectors import ContentDetector
     video = open_video(video_path)
     scene_manager = SceneManager()
     scene_manager.add_detector(ContentDetector())
@@ -490,6 +503,7 @@ def download_youtube_video(url, output_dir="."):
     Downloads a YouTube video using yt-dlp.
     Returns the path to the downloaded video and the video title.
     """
+    import yt_dlp
     print(f"🔍 Debug: yt-dlp version: {yt_dlp.version.__version__}")
     print("📥 Downloading video from YouTube...")
     step_start_time = time.time()
@@ -832,7 +846,7 @@ def process_video_to_vertical(input_video, final_output_video):
     
     return True
 
-def transcribe_video(video_path):
+def transcribe_video(video_path, duration=None):
     print("🎙️  Transcribing video with Faster-Whisper (CPU Optimized)...")
     from faster_whisper import WhisperModel
     
@@ -860,6 +874,10 @@ def transcribe_video(video_path):
     full_text = ""
     
     for segment in segments:
+        # Emit a machine-readable progress marker (consumed by the API status poller)
+        if duration and duration > 0:
+            pct = min(100, int((segment.end / duration) * 100))
+            print(f"PROGRESS:{pct}")
         # Print progress to keep user informed (and prevent timeouts feeling)
         print(f"   [{segment.start:.2f}s -> {segment.end:.2f}s] {segment.text}")
         
@@ -881,7 +899,10 @@ def transcribe_video(video_path):
         
         transcript_segments.append(seg_dict)
         full_text += segment.text + " "
-        
+    
+    if duration and duration > 0:
+        print("PROGRESS:100")
+    
     return {
         'text': full_text.strip(),
         'segments': transcript_segments,
@@ -1276,9 +1297,9 @@ if __name__ == '__main__':
             print(f"❌ Input file not found: {input_video}")
             sys.exit(1)
             
-        # 2. Transcribe
-        transcript = transcribe_video(input_video)
+        # 2. Transcribe (duration first so progress can be reported)
         duration = get_video_duration(input_video)
+        transcript = transcribe_video(input_video, duration=duration)
         transcript['duration_seconds'] = duration
         
         # Save transcript.json

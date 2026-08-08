@@ -113,7 +113,7 @@ export default function ProjectDetail({
                 const res = await fetch(getApiUrl(`/api/projects/${project.id}/videos/${videoId}/status`));
                 if (res.ok) {
                     const data = await res.json();
-                    setVideos(prev => prev.map(v => v.id === videoId ? { ...v, status: data.status, error: data.video?.error } : v));
+                    setVideos(prev => prev.map(v => v.id === videoId ? { ...v, status: data.status, error: data.video?.error, progress: data.progress } : v));
                     if (data.status === 'ready' || data.status === 'failed') {
                         clearInterval(id);
                         setActiveVideoJobs(prev => { const n = { ...prev }; delete n[videoId]; return n; });
@@ -498,15 +498,20 @@ export default function ProjectDetail({
                                     return (
                                         <div
                                             key={vid.id}
-                                            onClick={() => vid.status === 'ready' && handleLoadViewer(vid)}
                                             className="os-panel-2"
                                             style={{
                                                 padding: '0.625rem 0.75rem',
-                                                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
-                                                cursor: vid.status === 'ready' ? 'pointer' : 'default',
+                                                display: 'flex', flexDirection: 'column', gap: 6,
                                                 borderColor: isViewerActive ? 'var(--primary)' : undefined,
                                                 background: isViewerActive ? 'oklch(0.55 0.095 170 / 0.08)' : undefined,
                                                 transition: 'border-color var(--dur-fast), background var(--dur-fast)',
+                                            }}
+                                        >
+                                        <div
+                                            onClick={() => vid.status === 'ready' && handleLoadViewer(vid)}
+                                            style={{
+                                                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                                                cursor: vid.status === 'ready' ? 'pointer' : 'default',
                                             }}
                                             onMouseEnter={e => { if (!isViewerActive) e.currentTarget.style.borderColor = 'var(--border-2)'; }}
                                             onMouseLeave={e => { if (!isViewerActive) e.currentTarget.style.borderColor = 'var(--border)'; }}
@@ -592,6 +597,26 @@ export default function ProjectDetail({
                                                 </button>
                                             </div>
                                         </div>
+                                        {vid.status === 'analyzing' && (
+                                            <div style={{ width: '100%' }}>
+                                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 3 }}>
+                                                    <span style={{ fontSize: '0.6875rem', color: 'var(--subtle)' }}>
+                                                        {vid.progress != null ? `Transcribing... ${vid.progress}%` : 'Analyzing video...'}
+                                                    </span>
+                                                </div>
+                                                <div style={{ height: 6, borderRadius: 999, background: 'var(--border)', overflow: 'hidden' }}>
+                                                    <div
+                                                        style={{
+                                                            height: '100%', borderRadius: 999,
+                                                            background: 'var(--primary)',
+                                                            width: `${vid.progress != null ? vid.progress : 5}%`,
+                                                            transition: 'width 0.4s ease',
+                                                        }}
+                                                    />
+                                                </div>
+                                            </div>
+                                        )}
+                                    </div>
                                     );
                                 })
                             )}

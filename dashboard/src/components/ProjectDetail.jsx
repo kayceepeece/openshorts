@@ -43,6 +43,7 @@ export default function ProjectDetail({
     const [uploadProgress, setUploadProgress] = useState(null); // 0-100 int or null when not uploading
     const [isClipping, setIsClipping] = useState(false);
     const [customPrompt, setCustomPrompt] = useState('');
+    const [avoidPrevious, setAvoidPrevious] = useState(true);
     const [expandedClipJobId, setExpandedClipJobId] = useState(null);
     const [error, setError] = useState(null);
 
@@ -212,7 +213,7 @@ export default function ProjectDetail({
             const res = await fetch(getApiUrl(`/api/projects/${project.id}/clip`), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Gemini-Key': geminiApiKey },
-                body: JSON.stringify({ video_ids: selectedVideoIds, detection_prompt: customPrompt })
+                body: JSON.stringify({ video_ids: selectedVideoIds, detection_prompt: customPrompt, avoid_previous: avoidPrevious })
             });
             if (!res.ok) { const err = await res.json(); throw new Error(err.detail || 'Failed to create clipping job'); }
             const result = await res.json();
@@ -522,6 +523,28 @@ export default function ProjectDetail({
                                     placeholder="e.g. 'Find funny punchlines', 'Focus on product demo moments'"
                                     className="os-input os-textarea"
                                     style={{ height: 60, fontSize: '0.8125rem' }}
+                                />
+                            </div>
+                        )}
+
+                        {/* Avoid-previous toggle — appears when videos are selected */}
+                        {selectedVideoIds.length > 0 && (
+                            <div className="os-panel-2" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '0.625rem 0.75rem', marginBottom: '0.75rem' }}>
+                                <div style={{ minWidth: 0 }}>
+                                    <div style={{ fontSize: '0.8125rem', fontWeight: 500, color: 'var(--ink)' }}>Avoid previous clips</div>
+                                    <div style={{ fontSize: '0.6875rem', color: 'var(--subtle)' }}>
+                                        {avoidPrevious
+                                            ? 'Excludes moments already clipped from earlier jobs so every run surfaces fresh content.'
+                                            : 'Off — this run may pick the same moments as before.'}
+                                    </div>
+                                </div>
+                                <button
+                                    type="button"
+                                    className="os-toggle"
+                                    role="switch"
+                                    aria-checked={avoidPrevious}
+                                    onClick={() => setAvoidPrevious(v => !v)}
+                                    style={{ flexShrink: 0, marginLeft: 'auto' }}
                                 />
                             </div>
                         )}

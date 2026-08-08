@@ -1240,6 +1240,7 @@ class ProjectUpdate(BaseModel):
 class ClipJobCreate(BaseModel):
     video_ids: List[str]
     detection_prompt: Optional[str] = None
+    avoid_previous: bool = True
 
 class VideoUpdate(BaseModel):
     custom_instructions: Optional[str] = None
@@ -1603,13 +1604,16 @@ async def generate_clips(project_id: str, req: ClipJobCreate, request: Request):
         cmd.extend(["--content-type", p["content_type"]])
 
     # Collect previously-clipped moments per video so the new job avoids repeats
-    used = collect_used_moments(project_id, req.video_ids)
-    if any(used.values()):
-        exclude_file = os.path.join(clip_output_dir, "exclude_ranges.json")
-        with open(exclude_file, 'w') as f:
-            json.dump({"video_ids": req.video_ids, "used": {k: v for k, v in used.items() if v}}, f)
-        cmd.extend(["--exclude", exclude_file])
-        print(f"   ⚠️ Excluding {sum(len(v) for v in used.values())} previously-clipped moment(s) to avoid repeats.")
+    if req.avoid_previous:
+        used = collect_used_moments(project_id, req.video_ids)
+        if any(used.values()):
+            exclude_file = os.path.join(clip_output_dir, "exclude_ranges.json")
+            with open(exclude_file, 'w') as f:
+                json.dump({"video_ids": req.video_ids, "used": {k: v for k, v in used.items() if v}}, f)
+            cmd.extend(["--exclude", exclude_file])
+            print(f"   ⚠️ Excluding {sum(len(v) for v in used.values())} previously-clipped moment(s) to avoid repeats.")
+    else:
+        print("   ↪️ Avoid-previous disabled — this job may overlap earlier clips.")
 
     # Build the final prompt: project instructions → per-video instructions → per-job prompt
     prompt_parts = []

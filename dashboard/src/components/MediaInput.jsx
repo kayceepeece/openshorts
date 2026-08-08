@@ -112,7 +112,7 @@ export default function MediaInput({ onProcess, isProcessing, processingLabel })
                                 />
                                 <Upload size={22} style={{ color: 'var(--subtle)' }} />
                                 <p style={{ fontSize: '0.8125rem', color: 'var(--muted)', margin: 0 }}>Click to upload or drag and drop</p>
-                                <p style={{ fontSize: '0.6875rem', color: 'var(--subtle)', margin: 0 }}>MP4, MOV up to 500MB</p>
+                                <p style={{ fontSize: '0.6875rem', color: 'var(--subtle)', margin: 0 }}>MP4, MOV up to 2GB</p>
                             </label>
                         )}
                     </div>

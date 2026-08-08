@@ -95,7 +95,7 @@ export default function ProjectDetail({
 
     useEffect(() => {
         videos.forEach(vid => {
-            if (vid.status === 'analyzing' && !activeVideoJobs[vid.id]) startPollingVideo(vid.id);
+            if ((vid.status === 'analyzing' || vid.status === 'processing') && !activeVideoJobs[vid.id]) startPollingVideo(vid.id);
         });
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [videos]);
@@ -597,7 +597,7 @@ export default function ProjectDetail({
                                                 </button>
                                             </div>
                                         </div>
-                                        {vid.status === 'analyzing' && (
+                                        {(vid.status === 'analyzing' || vid.status === 'processing') && (
                                             <div style={{ width: '100%' }}>
                                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 3 }}>
                                                     <span style={{ fontSize: '0.6875rem', color: 'var(--subtle)' }}>

@@ -132,7 +132,7 @@ export default function ProjectDetail({
                 const res = await fetch(getApiUrl(`/api/clip-jobs/${clipJobId}`));
                 if (res.ok) {
                     const data = await res.json();
-                    setClipJobs(prev => prev.map(cj => cj.id === clipJobId ? { ...cj, status: data.status, error: data.error, result_json: data.result_json } : cj));
+                    setClipJobs(prev => prev.map(cj => cj.id === clipJobId ? { ...cj, status: data.status, error: data.error, result_json: data.result_json, clip_count: data.clip_count ?? cj.clip_count } : cj));
                     if (data.status === 'completed' || data.status === 'failed') {
                         clearInterval(id);
                         setActiveClipJobs(prev => { const n = { ...prev }; delete n[clipJobId]; return n; });
@@ -758,7 +758,7 @@ export default function ProjectDetail({
 
                                             {isExpanded && (
                                                 <div style={{ borderTop: '1px solid var(--border)', background: 'oklch(0.06 0.004 170)', padding: '1rem' }}>
-                                                    {cj.status === 'queued' || cj.status === 'processing' ? (
+                                                    {((cj.status === 'queued' || cj.status === 'processing') && (result?.clips?.length || 0) === 0) ? (
                                                         <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '2rem', gap: 12 }}>
                                                             <div style={{ width: 28, height: 28, border: '2px solid var(--border-2)', borderTopColor: 'var(--primary)', borderRadius: '50%', animation: 'spin 0.8s linear infinite' }} />
                                                             <p style={{ fontSize: '0.8125rem', color: 'var(--muted)', margin: 0 }}>Detecting moments &amp; rendering…</p>
@@ -766,20 +766,33 @@ export default function ProjectDetail({
                                                                 <div className="os-progress-bar" />
                                                             </div>
                                                         </div>
-                                                    ) : cj.status === 'failed' ? (
+                                                    ) : cj.status === 'failed' && (result?.clips?.length || 0) === 0 ? (
                                                         <p style={{ fontSize: '0.8125rem', color: 'var(--error)', textAlign: 'center', padding: '1rem', margin: 0 }}>
                                                             Failed: {cj.error || 'Unknown error'}
                                                         </p>
                                                     ) : result?.clips?.length > 0 ? (
-                                                        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '0.75rem' }}>
-                                                            {result.clips.map((clip, idx) => (
-                                                                <ResultCard
-                                                                    key={idx} clip={clip} index={idx} jobId={cj.id}
-                                                                    uploadPostKey={uploadPostKey} uploadUserId={uploadUserId}
-                                                                    geminiApiKey={geminiApiKey} elevenLabsKey={elevenLabsKey}
-                                                                    onPlay={onPlayClip} onPause={onPauseClip}
-                                                                />
-                                                            ))}
+                                                        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                                                            {cj.status === 'failed' && (
+                                                                <p style={{ fontSize: '0.8125rem', color: 'var(--error)', margin: 0 }}>
+                                                                    ⚠️ Job failed: {cj.error || 'Unknown error'} — showing the {result.clips.length} clip{result.clips.length === 1 ? '' : 's'} rendered before the failure.
+                                                                </p>
+                                                            )}
+                                                            {cj.status === 'processing' && (
+                                                                <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.75rem', color: 'var(--muted)' }}>
+                                                                    <div style={{ width: 13, height: 13, border: '2px solid var(--border-2)', borderTopColor: 'var(--primary)', borderRadius: '50%', animation: 'spin 0.8s linear infinite', flexShrink: 0 }} />
+                                                                    <span>{result.clips.length} rendered — still working…</span>
+                                                                </div>
+                                                            )}
+                                                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(280px, 1fr))', gap: '0.75rem' }}>
+                                                                {result.clips.map((clip, idx) => (
+                                                                    <ResultCard
+                                                                        key={idx} clip={clip} index={idx} jobId={cj.id}
+                                                                        uploadPostKey={uploadPostKey} uploadUserId={uploadUserId}
+                                                                        geminiApiKey={geminiApiKey} elevenLabsKey={elevenLabsKey}
+                                                                        onPlay={onPlayClip} onPause={onPauseClip}
+                                                                    />
+                                                                ))}
+                                                            </div>
                                                         </div>
                                                     ) : (
                                                         <p style={{ fontSize: '0.8125rem', color: 'var(--subtle)', textAlign: 'center', padding: '1rem', margin: 0 }}>No clips found for this job.</p>

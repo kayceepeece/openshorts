@@ -62,7 +62,7 @@ export default function ModalShell({
         };
     }, [isOpen, handleKeyDown]);
 
-    if (!open) return null;
+    if (!isOpen) return null;
 
     return (
         <div

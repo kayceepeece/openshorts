@@ -99,6 +99,60 @@ OUTPUT — RETURN ONLY VALID JSON (no markdown, no comments). Order clips by pre
 """
     return prompt
 
+OVERLAP_TOLERANCE_SECONDS = 1.0  # allow up to 1s of overlap with previous clips
+
+def overlaps_used(start, end, used_ranges, tolerance=OVERLAP_TOLERANCE_SECONDS):
+    """Return True if [start,end] overlaps any used range by more than `tolerance` seconds."""
+    for (u_start, u_end) in used_ranges:
+        overlap = min(end, u_end) - max(start, u_start)
+        if overlap > tolerance:
+            return True
+    return False
+
+def trim_to_used(start, end, used_ranges, tolerance=OVERLAP_TOLERANCE_SECONDS):
+    """Trim a clip that overlaps a used range back to the boundary.
+    Keeps the non-overlapping head/tail where possible; returns None if the
+    clip is fully inside a used range or can't keep the 15s minimum."""
+    for (u_start, u_end) in used_ranges:
+        overlap = min(end, u_end) - max(start, u_start)
+        if overlap <= tolerance:
+            continue
+        extends_left  = start < u_start   # non-overlapping head before the used range
+        extends_right = end > u_end       # non-overlapping tail after the used range
+        if extends_left and extends_right:
+            # Spans the whole used range: keep the larger non-overlapping side
+            left_len  = u_start - start
+            right_len = end - u_end
+            if left_len >= right_len:
+                new_start, new_end = start, u_start
+            else:
+                new_start, new_end = u_end, end
+        elif extends_left:
+            # Starts before the used range and ends inside it: keep the head
+            new_start, new_end = start, u_start
+        elif extends_right:
+            # Ends after the used range and starts inside it: keep the tail
+            new_start, new_end = u_end, end
+        else:
+            # Fully inside the used range: nothing to salvage
+            return None
+        if new_end - new_start >= 15.0:  # keep 15s minimum (matching prompt contract)
+            return (new_start, new_end)
+        return None
+    return (start, end)
+
+def build_used_moments_block(video_index, used_moments):
+    """Build a prompt exclusion block for a specific video, if any ranges exist."""
+    ranges = [u for u in used_moments if u.get("video_index") == video_index]
+    if not ranges:
+        return ""
+    fmt = ", ".join(f"[{r['start']:.1f}-{r['end']:.1f}]" for r in sorted(ranges, key=lambda r: r['start']))
+    return f"""⚠️ ALREADY-CLIPPED MOMENTS EXCLUSION:
+The following time ranges for this video were ALREADY clipped in previous jobs: {fmt}
+You MUST select DIFFERENT moments. STRICTLY avoid these ranges — do not overlap them by more than 1 second.
+These are hard constraints; do not pick moments inside or spanning these ranges.
+"""
+
 # YOLO model is lazily loaded on first use to keep transcription-only jobs
 # from pulling in torch/ultralytics (large memory cost on small VPS boxes).
 YOLO_MODEL_PATH = os.environ.get("YOLO_MODEL_PATH", "yolov8n.pt")
@@ -1099,7 +1153,7 @@ def get_video_duration(video_path):
     cap.release()
     return duration
 
-def detect_clips_stage2(transcripts, dossiers, custom_prompt, api_key, content_type='general'):
+def detect_clips_stage2(transcripts, dossiers, custom_prompt, api_key, content_type='general', used_moments=None):
     """Process each video as its own isolated Gemini API call.
 
     Each video = one upload + one clip-detection call. Multi-video jobs
@@ -1136,89 +1190,80 @@ def detect_clips_stage2(transcripts, dossiers, custom_prompt, api_key, content_t
         "video_count":   len(transcripts),
     }
 
-    for video_index, (trans, doss) in enumerate(zip_longest(transcripts, dossiers, fillvalue="")):
-        if trans == "":
-            # Dossiers list was longer — skip phantom entry
-            continue
-
-        print(f"\n📹 Processing video {video_index + 1}/{len(transcripts)}...")
-
-        # ── Build word list ──────────────────────────────────────────────
+    def _gemini_call(video_index, trans, doss, extra_exclusions=None):
+        """One Gemini clip-detection call for a single video. Returns parsed shorts list."""
+        # Build word list
         words = []
         for segment in trans.get('segments', []):
             for word in segment.get('words', []):
-                words.append({
-                    'w': word['word'],
-                    's': word['start'],
-                    'e': word['end']
-                })
-
+                words.append({'w': word['word'], 's': word['start'], 'e': word['end']})
         duration = trans.get('duration_seconds', 0.0)
 
-        # ── Build per-video input section ────────────────────────────────
-        # When called per-video, video_index in the prompt is always 0
-        # so the model uses video_index=0 in its JSON output.
-        # We remap to the real index when merging results below.
         input_data_section  = "=== VIDEO INDEX 0 ===\n"
         input_data_section += f"VIDEO_DURATION_SECONDS: {duration}\n"
         input_data_section += f"TRANSCRIPT_TEXT:\n{json.dumps(trans.get('text', ''))}\n"
         input_data_section += f"WORDS_JSON:\n{json.dumps(words)}\n"
         if doss:
             input_data_section += f"VISUAL DOSSIER:\n{doss}\n"
+        # Add the exclusion block so Gemini avoids already-clipped moments
+        excl_block = build_used_moments_block(video_index, used_moments)
+        if excl_block:
+            input_data_section += "\n" + excl_block
+        # Repair pass: additionally exclude ranges that were just rejected
+        if extra_exclusions:
+            fmt = ", ".join(f"[{r[0]:.1f}-{r[1]:.1f}]" for r in sorted(extra_exclusions))
+            input_data_section += f"\n⚠️ ADDITIONAL HARD EXCLUSIONS (rejected as duplicates): {fmt}\n"
 
-        # ── Pre-flight token estimate ────────────────────────────────────
         raw_payload = input_data_section + user_prompt_str
         estimated_tokens = len(raw_payload) // TOKEN_ESTIMATE_DIVISOR
         print(f"   📊 Estimated input tokens: ~{estimated_tokens:,}")
         if estimated_tokens > TOKEN_WARN_THRESHOLD:
             print(f"   ⚠️  Large payload detected ({estimated_tokens:,} tokens > {TOKEN_WARN_THRESHOLD:,} threshold).")
-            print(f"   ⚠️  Consider splitting videos longer than ~1 hour for best quality.")
 
         prompt = get_clipping_prompt(input_data_section, user_detection_prompt=user_prompt_str, content_type=content_type)
+        response = client.models.generate_content(model=model_name, contents=prompt)
 
-        # ── Gemini API call ──────────────────────────────────────────────
+        # Cost tracking
         try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt
-            )
+            usage = response.usage_metadata
+            if usage:
+                prompt_tokens = usage.prompt_token_count or 0
+                output_tokens = usage.candidates_token_count or 0
+                input_cost    = (prompt_tokens / 1_000_000) * INPUT_PRICE_PER_MILLION
+                output_cost   = (output_tokens / 1_000_000) * OUTPUT_PRICE_PER_MILLION
+                call_cost     = input_cost + output_cost
+                print(f"   💰 Token usage: {prompt_tokens:,} in / {output_tokens:,} out → ${call_cost:.6f}")
+                total_cost_data["input_tokens"]  += prompt_tokens
+                total_cost_data["output_tokens"] += output_tokens
+                total_cost_data["input_cost"]    += input_cost
+                total_cost_data["output_cost"]   += output_cost
+                total_cost_data["total_cost"]    += call_cost
+        except Exception as cost_err:
+            print(f"   ⚠️ Could not calculate cost for video {video_index}: {cost_err}")
 
-            # Cost tracking
-            try:
-                usage = response.usage_metadata
-                if usage:
-                    prompt_tokens = usage.prompt_token_count or 0
-                    output_tokens = usage.candidates_token_count or 0
-                    input_cost    = (prompt_tokens / 1_000_000) * INPUT_PRICE_PER_MILLION
-                    output_cost   = (output_tokens / 1_000_000) * OUTPUT_PRICE_PER_MILLION
-                    call_cost     = input_cost + output_cost
-                    print(f"   💰 Token usage: {prompt_tokens:,} in / {output_tokens:,} out → ${call_cost:.6f}")
-                    total_cost_data["input_tokens"]  += prompt_tokens
-                    total_cost_data["output_tokens"] += output_tokens
-                    total_cost_data["input_cost"]    += input_cost
-                    total_cost_data["output_cost"]   += output_cost
-                    total_cost_data["total_cost"]    += call_cost
-            except Exception as cost_err:
-                print(f"   ⚠️ Could not calculate cost for video {video_index}: {cost_err}")
+        text = response.text
+        if text.startswith("```json"):
+            text = text[7:]
+        if text.endswith("```"):
+            text = text[:-3]
+        text = text.strip()
 
-            # Parse response
-            text = response.text
-            if text.startswith("```json"):
-                text = text[7:]
-            if text.endswith("```"):
-                text = text[:-3]
-            text = text.strip()
+        video_result = json.loads(text)
+        shorts = video_result.get("shorts", [])
+        for clip in shorts:
+            clip["video_index"] = video_index
+        return shorts
 
-            video_result = json.loads(text)
-            shorts = video_result.get("shorts", [])
+    for video_index, (trans, doss) in enumerate(zip_longest(transcripts, dossiers, fillvalue="")):
+        if trans == "":
+            # Dossiers list was longer — skip phantom entry
+            continue
 
-            # Remap video_index=0 → real index in the multi-video result set
-            for clip in shorts:
-                clip["video_index"] = video_index
-
+        print(f"\n📹 Processing video {video_index + 1}/{len(transcripts)}...")
+        try:
+            shorts = _gemini_call(video_index, trans, doss)
             all_shorts.extend(shorts)
             print(f"   ✅ Found {len(shorts)} clip(s) for video {video_index + 1}")
-
         except Exception as e:
             print(f"   ❌ Gemini error on video {video_index + 1}: {e}")
             # Continue processing remaining videos rather than aborting entire job
@@ -1227,6 +1272,63 @@ def detect_clips_stage2(transcripts, dossiers, custom_prompt, api_key, content_t
     if not all_shorts:
         print("❌ No clips detected across any videos.")
         return None
+
+    # ── Overlap post-filter + auto-repair against previously-clipped moments ──
+    rejected = []          # clips rejected for overlap (kept for user review)
+    if used_moments:
+        accepted = []          # clips kept (possibly trimmed to boundary)
+        need_repair = {vi: [] for vi in range(len(transcripts))}
+
+        for clip in all_shorts:
+            vi = clip.get('video_index', 0)
+            start = clip.get('start', 0.0)
+            end = clip.get('end', 0.0)
+            used_ranges = [u for u in used_moments if u.get("video_index") == vi]
+            if not used_ranges:
+                accepted.append(clip)
+                continue
+            ranges = [(u['start'], u['end']) for u in used_ranges]
+            if overlaps_used(start, end, ranges):
+                # Try to salvage a small overlap by trimming to the boundary
+                trimmed = trim_to_used(start, end, ranges)
+                if trimmed and trimmed != (start, end) and not overlaps_used(trimmed[0], trimmed[1], ranges):
+                    clip['start'], clip['end'] = trimmed
+                    accepted.append(clip)
+                    print(f"   ✂️ Trimmed clip [{start:.1f}-{end:.1f}] → [{trimmed[0]:.1f}-{trimmed[1]:.1f}] to avoid overlap")
+                else:
+                    rejected.append(clip)
+                    need_repair[vi].append((start, end))
+                    print(f"   ⛔ Rejected clip [{start:.1f}-{end:.1f}] (overlaps previous moments) — will request a replacement")
+            else:
+                accepted.append(clip)
+
+        # Auto-repair: request replacements for rejected clips, one repair call per video
+        if rejected:
+            print(f"\n🔧 Auto-repair: requesting {len(rejected)} replacement clip(s)...")
+            for vi in sorted(need_repair):
+                if not need_repair[vi]:
+                    continue
+                if vi >= len(transcripts):
+                    continue
+                try:
+                    print(f"   Re-calling Gemini for video {vi + 1} to replace rejected ranges...")
+                    replacements = _gemini_call(vi, transcripts[vi], dossiers[vi] if vi < len(dossiers) else "", extra_exclusions=need_repair[vi])
+                    for clip in replacements:
+                        s = clip.get('start', 0.0); e = clip.get('end', 0.0)
+                        ranges = [(u['start'], u['end']) for u in used_moments if u.get("video_index") == vi]
+                        if overlaps_used(s, e, ranges):
+                            print(f"   ⛔ Replacement [{s:.1f}-{e:.1f}] also overlaps — discarding")
+                            rejected.append(clip)
+                        else:
+                            accepted.append(clip)
+                            print(f"   ✅ Replacement [{s:.1f}-{e:.1f}] accepted")
+                except Exception as e:
+                    print(f"   ❌ Auto-repair failed for video {vi + 1}: {e}")
+
+        all_shorts = accepted
+
+        if rejected:
+            print(f"\n   ⚠️ {len(rejected)} clip(s) were rejected for overlapping previous clips. They are kept in 'rejected_clips' for your review.")
 
     # Print cumulative cost summary for multi-video jobs
     if len(transcripts) > 1:
@@ -1237,6 +1339,7 @@ def detect_clips_stage2(transcripts, dossiers, custom_prompt, api_key, content_t
 
     return {
         "shorts":        all_shorts,
+        "rejected_clips": rejected,
         "cost_analysis": total_cost_data,
     }
 
@@ -1259,6 +1362,8 @@ if __name__ == '__main__':
     parser.add_argument('--dossier', type=str, nargs='*', help="Dossier file(s) for clipping, or use as boolean flag in analyze mode.")
     parser.add_argument('--transcript', type=str, nargs='*', help="Transcript JSON file(s) for clipping mode.")
     parser.add_argument('--prompt', type=str, default="", help="Custom prompt for clip detection.")
+    parser.add_argument('--exclude', type=str, default="", help="JSON file with already-clipped [start,end] ranges per video to avoid repeats.")
+    parser.add_argument('--render-single', type=str, default="", help="Render one clip (JSON: {\"input\":path,\"start\":s,\"end\":e,\"output\":path}) then exit.")
     parser.add_argument('--custom-prompt', type=str, default="", help="Custom instructions/prompt for dossier generation in analyze mode.")
     parser.add_argument('--content-type', type=str, default="general", help="Domain/content type template to use (general, sports, podcast, lecture, gaming, interview).")
     parser.add_argument('--keep-original', action='store_true', help="Keep downloaded YouTube video (legacy mode).")
@@ -1273,6 +1378,43 @@ if __name__ == '__main__':
         if path:
             os.makedirs(path, exist_ok=True)
         return path
+
+    # Render a single clip from its source video (used by rejected-clip "Keep").
+    if args.render_single:
+        import json as _json
+        spec = _json.loads(args.render_single)
+        input_video = spec.get("input")
+        output_path = spec.get("output")
+        start = float(spec.get("start", 0))
+        end = float(spec.get("end", 0))
+        if not input_video or not output_path:
+            print("❌ --render-single requires {\"input\",\"output\",\"start\",\"end\"}.")
+            sys.exit(1)
+        if not os.path.exists(input_video):
+            print(f"❌ Input video not found: {input_video}")
+            sys.exit(1)
+        os.makedirs(os.path.dirname(output_path), exist_ok=True)
+        temp_path = os.path.join(os.path.dirname(output_path), f"temp_{os.path.basename(output_path)}")
+        cut_command = [
+            'ffmpeg', '-y',
+            '-ss', str(start),
+            '-to', str(end),
+            '-i', input_video,
+            '-c:v', 'libx264', '-crf', '18', '-preset', 'fast',
+            '-pix_fmt', 'yuv420p',
+            '-c:a', 'aac',
+            temp_path
+        ]
+        subprocess.run(cut_command, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+        success = process_video_to_vertical(temp_path, output_path)
+        if os.path.exists(temp_path):
+            os.remove(temp_path)
+        if success:
+            print(f"✅ Rendered single clip: {output_path}")
+            sys.exit(0)
+        else:
+            print("❌ Failed to render single clip.")
+            sys.exit(1)
 
     if args.analyze:
         print("🔍 Running in Stage 1: Analyze mode...")
@@ -1368,13 +1510,32 @@ if __name__ == '__main__':
                 else:
                     dossiers.append("")
                     
+        # Load previously-clipped ranges to avoid repeats (per video)
+        used_moments = []  # list of {video_index, start, end}
+        if args.exclude and os.path.exists(args.exclude):
+            try:
+                with open(args.exclude, 'r') as f:
+                    excl = json.load(f)
+                vid_ids = excl.get("video_ids", [])
+                used_map = excl.get("used", {})
+                for vid, ranges in used_map.items():
+                    idx = vid_ids.index(vid) if vid in vid_ids else -1
+                    if idx < 0:
+                        continue
+                    for (s, e) in ranges:
+                        used_moments.append({"video_index": idx, "start": s, "end": e})
+                print(f"   ⚠️ Loaded {len(used_moments)} previously-clipped moment(s) to exclude from selection.")
+            except Exception as e:
+                print(f"   ⚠️ Failed to load exclude ranges: {e}")
+                used_moments = []
+
         # 1. Run Gemini for clip detection
         api_key = os.getenv("GEMINI_API_KEY")
         if not api_key:
             print("❌ Error: GEMINI_API_KEY not found in environment variables.")
             sys.exit(1)
             
-        clips_data = detect_clips_stage2(transcripts, dossiers, args.prompt, api_key, args.content_type)
+        clips_data = detect_clips_stage2(transcripts, dossiers, args.prompt, api_key, args.content_type, used_moments=used_moments)
         
         if not clips_data or 'shorts' not in clips_data:
             print("❌ Failed to identify clips.")

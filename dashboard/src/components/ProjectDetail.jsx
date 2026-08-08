@@ -4,7 +4,7 @@ import {
     BookOpen, FileText, CheckSquare, Trash2,
     Activity, Clock, Download, ChevronRight,
     MessageSquare, RefreshCw, Settings, Plus, X,
-    PanelRightOpen, PanelRightClose
+    PanelRightOpen, PanelRightClose, AlertTriangle
 } from 'lucide-react';
 import MediaInput from './MediaInput';
 import ResultCard from './ResultCard';
@@ -251,6 +251,50 @@ export default function ProjectDetail({
             if (!res.ok) { const err = await res.json(); throw new Error(err.detail || 'Failed to retry'); }
             setVideos(prev => prev.map(v => v.id === videoId ? { ...v, status: 'analyzing', error: null } : v));
             startPollingVideo(videoId);
+        } catch (e) {
+            alert(e.message);
+        }
+    };
+
+    const updateClipJobResult = (clipJobId, updater) => {
+        setClipJobs(prev => prev.map(cj => {
+            if (cj.id !== clipJobId) return cj;
+            let result = null;
+            if (cj.result_json) {
+                try { result = typeof cj.result_json === 'string' ? JSON.parse(cj.result_json) : cj.result_json; }
+                catch { result = null; }
+            }
+            return { ...cj, result_json: JSON.stringify(updater(result || {})) };
+        }));
+    };
+
+    const handleKeepRejected = async (clipJobId, clipIndex, e) => {
+        e.stopPropagation();
+        try {
+            const res = await fetch(getApiUrl(`/api/clip-jobs/${clipJobId}/rejected/render`), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ clip_index: clipIndex })
+            });
+            if (!res.ok) { const err = await res.json(); throw new Error(err.detail || 'Failed to render'); }
+            const data = await res.json();
+            updateClipJobResult(clipJobId, () => ({ clips: data.clips, rejected_clips: data.rejected_clips, cost_analysis: data.cost_analysis }));
+        } catch (e) {
+            alert(e.message);
+        }
+    };
+
+    const handleDismissRejected = async (clipJobId, clipIndex, e) => {
+        e.stopPropagation();
+        try {
+            const res = await fetch(getApiUrl(`/api/clip-jobs/${clipJobId}/rejected/dismiss`), {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ clip_index: clipIndex })
+            });
+            if (!res.ok) { const err = await res.json(); throw new Error(err.detail || 'Failed to dismiss'); }
+            const data = await res.json();
+            updateClipJobResult(clipJobId, () => ({ clips: data.clips || [], rejected_clips: data.rejected_clips, cost_analysis: data.cost_analysis }));
         } catch (e) {
             alert(e.message);
         }
@@ -716,6 +760,50 @@ export default function ProjectDetail({
                                                         </div>
                                                     ) : (
                                                         <p style={{ fontSize: '0.8125rem', color: 'var(--subtle)', textAlign: 'center', padding: '1rem', margin: 0 }}>No clips found for this job.</p>
+                                                    )}
+
+                                                    {/* Rejected (duplicate-overlap) clips — kept for user review */}
+                                                    {result?.rejected_clips?.length > 0 && (
+                                                        <div style={{ marginTop: '0.75rem', borderTop: '1px dashed var(--border-2)', paddingTop: '0.75rem' }}>
+                                                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: '0.5rem' }}>
+                                                                <AlertTriangle size={12} style={{ color: 'var(--warning)' }} />
+                                                                <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--muted)' }}>
+                                                                    {result.rejected_clips.length} skipped (overlapped previous clips) — review or discard
+                                                                </span>
+                                                            </div>
+                                                            <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                                                                {result.rejected_clips.map((rc, ridx) => (
+                                                                    <div key={ridx} className="os-panel-2" style={{ padding: '0.625rem 0.75rem', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                                                                        <div style={{ minWidth: 0 }}>
+                                                                            <div style={{ fontSize: '0.75rem', fontWeight: 500, color: 'var(--ink)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                                                {rc.video_title_for_youtube_short || rc.video_description_for_tiktok || `Clip ${rc.start}-${rc.end}s`}
+                                                                            </div>
+                                                                            <div style={{ fontSize: '0.6875rem', color: 'var(--subtle)', marginTop: 2 }}>
+                                                                                {Math.floor((rc.end || 0) - (rc.start || 0))}s · {rc.start?.toFixed?.(1)}–{rc.end?.toFixed?.(1)}s
+                                                                            </div>
+                                                                        </div>
+                                                                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+                                                                            <button
+                                                                                onClick={e => handleKeepRejected(cj.id, ridx, e)}
+                                                                                className="os-btn os-btn-xs os-btn-secondary"
+                                                                                style={{ gap: 4 }}
+                                                                                title="Render this clip anyway and add it to your clips"
+                                                                            >
+                                                                                <RefreshCw size={11} /> Keep
+                                                                            </button>
+                                                                            <button
+                                                                                onClick={e => handleDismissRejected(cj.id, ridx, e)}
+                                                                                className="os-btn os-btn-xs os-btn-ghost"
+                                                                                style={{ gap: 4 }}
+                                                                                title="Discard this clip permanently"
+                                                                            >
+                                                                                <X size={11} /> Discard
+                                                                            </button>
+                                                                        </div>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        </div>
                                                     )}
                                                 </div>
                                             )}

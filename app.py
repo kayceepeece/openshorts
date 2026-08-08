@@ -476,6 +476,46 @@ def delete_clip_job_files(clip_job_id: str):
     if os.path.isdir(job_dir):
         shutil.rmtree(job_dir, ignore_errors=True)
 
+def collect_used_moments(project_id: str, video_ids: list) -> dict:
+    """Gather every previously-rendered clip's [start,end] per video from all
+    completed clip jobs in this project, so new clip generation can avoid repeats.
+    Returns {video_id: [(start, end), ...]}."""
+    used = {vid: [] for vid in video_ids}
+    conn = _db_conn()
+    try:
+        rows = conn.execute(
+            "SELECT video_ids, status, result_json FROM clip_jobs WHERE project_id = ? AND status = 'completed'",
+            (project_id,)
+        ).fetchall()
+    finally:
+        conn.close()
+
+    for row in rows:
+        try:
+            job_vids = json.loads(row["video_ids"])
+        except Exception:
+            continue
+        result = None
+        try:
+            if row["result_json"]:
+                result = json.loads(row["result_json"])
+        except Exception:
+            result = None
+        clips = (result or {}).get("clips") or (result or {}).get("shorts") or []
+        for clip in clips:
+            start = clip.get("start")
+            end = clip.get("end")
+            if start is None or end is None:
+                continue
+            # Map clip's video_index to the video id from that job's video_ids
+            idx = clip.get("video_index", 0)
+            if idx < 0 or idx >= len(job_vids):
+                continue
+            vid = job_vids[idx]
+            if vid in used:
+                used[vid].append((float(start), float(end)))
+    return used
+
 def get_video_file_path(video_id: str) -> Optional[str]:
     upload_pattern = os.path.join(UPLOAD_DIR, f"{video_id}_*")
     upload_files = glob.glob(upload_pattern)
@@ -868,31 +908,32 @@ async def run_job(job_id, job_data):
                                 
                             clips = data.get('shorts', [])
                             cost_analysis = data.get('cost_analysis')
+                            rejected_clips = data.get('rejected_clips', [])
                             
                             ready_clips = []
                             for i, clip in enumerate(clips):
-                                 # clip_generation uses {job_id}_clip_{i+1}.mp4
-                                 # legacy uses {base_name}_clip_{i+1}.mp4
-                                 if job_type == 'clip_generation':
-                                     clip_filename = f"{job_id}_clip_{i+1}.mp4"
-                                 else:
-                                     base_name = os.path.basename(target_json).replace('_metadata.json', '')
-                                     clip_filename = f"{base_name}_clip_{i+1}.mp4"
-                                 clip_path = os.path.join(output_dir, clip_filename)
-                                 if os.path.exists(clip_path) and os.path.getsize(clip_path) > 0:
-                                     clip['video_url'] = f"/videos/{job_id}/{clip_filename}"
-                                     ready_clips.append(clip)
+                                # clip_generation uses {job_id}_clip_{i+1}.mp4
+                                # legacy uses {base_name}_clip_{i+1}.mp4
+                                if job_type == 'clip_generation':
+                                    clip_filename = f"{job_id}_clip_{i+1}.mp4"
+                                else:
+                                    base_name = os.path.basename(target_json).replace('_metadata.json', '')
+                                    clip_filename = f"{base_name}_clip_{i+1}.mp4"
+                                clip_path = os.path.join(output_dir, clip_filename)
+                                if os.path.exists(clip_path) and os.path.getsize(clip_path) > 0:
+                                    clip['video_url'] = f"/videos/{job_id}/{clip_filename}"
+                                    ready_clips.append(clip)
                             
                             if ready_clips:
-                                 jobs[job_id]['result'] = {'clips': ready_clips, 'cost_analysis': cost_analysis}
-                                 # Persist partial results to DB so UI can fetch incrementally
-                                 if len(ready_clips) > last_reported_clip_count:
-                                     last_reported_clip_count = len(ready_clips)
-                                     partial_result = json.dumps({'clips': ready_clips, 'cost_analysis': cost_analysis})
-                                     if job_type == 'clip_generation':
-                                         update_clip_job(job_id, clip_count=len(ready_clips), result_json=partial_result)
-                                     else:
-                                         save_job(job_id, clip_count=len(ready_clips), result_json=partial_result)
+                                jobs[job_id]['result'] = {'clips': ready_clips, 'cost_analysis': cost_analysis, 'rejected_clips': rejected_clips}
+                                # Persist partial results to DB so UI can fetch incrementally
+                                if len(ready_clips) > last_reported_clip_count:
+                                    last_reported_clip_count = len(ready_clips)
+                                    partial_result = json.dumps({'clips': ready_clips, 'cost_analysis': cost_analysis, 'rejected_clips': rejected_clips})
+                                    if job_type == 'clip_generation':
+                                        update_clip_job(job_id, clip_count=len(ready_clips), result_json=partial_result)
+                                    else:
+                                        save_job(job_id, clip_count=len(ready_clips), result_json=partial_result)
                 except Exception:
                     pass
 
@@ -981,14 +1022,15 @@ async def run_job(job_id, job_data):
                     base_name = os.path.basename(target_json).replace('_metadata.json', '')
                     clips = data.get('shorts', [])
                     cost_analysis = data.get('cost_analysis')
+                    rejected_clips = data.get('rejected_clips', [])
 
                     for i, clip in enumerate(clips):
                          clip_filename = f"{base_name}_clip_{i+1}.mp4"
                          clip['video_url'] = f"/videos/{job_id}/{clip_filename}"
                     
-                    jobs[job_id]['result'] = {'clips': clips, 'cost_analysis': cost_analysis}
+                    jobs[job_id]['result'] = {'clips': clips, 'cost_analysis': cost_analysis, 'rejected_clips': rejected_clips}
                     save_job(job_id, status='completed', completed_at=time.time(),
-                             clip_count=len(clips), result_json=json.dumps({'clips': clips, 'cost_analysis': cost_analysis}))
+                             clip_count=len(clips), result_json=json.dumps({'clips': clips, 'cost_analysis': cost_analysis, 'rejected_clips': rejected_clips}))
                 else:
                      jobs[job_id]['status'] = 'failed'
                      jobs[job_id]['logs'].append("No metadata file generated.")
@@ -1560,6 +1602,15 @@ async def generate_clips(project_id: str, req: ClipJobCreate, request: Request):
     if p.get("content_type"):
         cmd.extend(["--content-type", p["content_type"]])
 
+    # Collect previously-clipped moments per video so the new job avoids repeats
+    used = collect_used_moments(project_id, req.video_ids)
+    if any(used.values()):
+        exclude_file = os.path.join(clip_output_dir, "exclude_ranges.json")
+        with open(exclude_file, 'w') as f:
+            json.dump({"video_ids": req.video_ids, "used": {k: v for k, v in used.items() if v}}, f)
+        cmd.extend(["--exclude", exclude_file])
+        print(f"   ⚠️ Excluding {sum(len(v) for v in used.values())} previously-clipped moment(s) to avoid repeats.")
+
     # Build the final prompt: project instructions → per-video instructions → per-job prompt
     prompt_parts = []
     if p.get("custom_instructions"):
@@ -1654,6 +1705,108 @@ async def api_get_clip_job_clips(clip_job_id: str):
         raise HTTPException(status_code=404, detail="Clips not found or job not completed yet")
         
     return result
+
+class RejectedRenderRequest(BaseModel):
+    clip_index: int
+
+@app.post("/api/clip-jobs/{clip_job_id}/rejected/render")
+async def api_render_rejected_clip(clip_job_id: str, req: RejectedRenderRequest, request: Request):
+    """Render a previously-rejected (duplicate-overlap) clip and promote it into the job's clips."""
+    cj = get_clip_job(clip_job_id)
+    result = None
+    if cj and cj.get("result_json"):
+        try:
+            result = json.loads(cj["result_json"])
+        except Exception:
+            pass
+    elif clip_job_id in jobs and jobs[clip_job_id].get("result"):
+        result = jobs[clip_job_id]["result"]
+
+    if not result:
+        raise HTTPException(status_code=404, detail="Clip job result not found")
+
+    rejected = result.get("rejected_clips") or []
+    if req.clip_index < 0 or req.clip_index >= len(rejected):
+        raise HTTPException(status_code=404, detail="Rejected clip not found")
+
+    clip = rejected[req.clip_index]
+    vi = clip.get("video_index", 0)
+    start = clip.get("start", 0.0)
+    end = clip.get("end", 0.0)
+
+    # Resolve source video for this clip
+    vids = []
+    if cj and cj.get("video_ids"):
+        try:
+            vids = json.loads(cj["video_ids"])
+        except Exception:
+            pass
+    if vi < 0 or vi >= len(vids):
+        raise HTTPException(status_code=400, detail=f"video_index {vi} out of range for this job")
+    vpath = get_video_file_path(vids[vi])
+    if not vpath or not os.path.exists(vpath):
+        raise HTTPException(status_code=404, detail="Source video file not found on disk")
+
+    # Render into the job output dir as the next clip
+    job_dir = os.path.join(OUTPUT_DIR, clip_job_id)
+    os.makedirs(job_dir, exist_ok=True)
+    clips = result.get("clips") or []
+    new_index = len(clips)  # next available clip slot (1-based in filename)
+    clip_filename = f"{clip_job_id}_clip_{new_index + 1}.mp4"
+    clip_final_path = os.path.join(job_dir, clip_filename)
+
+    spec = json.dumps({"input": vpath, "output": clip_final_path, "start": start, "end": end})
+    cmd = ["python", "-u", "main.py", "--render-single", spec]
+    env = os.environ.copy()
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=env, cwd=os.getcwd(), timeout=1800)
+
+    if proc.returncode != 0:
+        raise HTTPException(status_code=500, detail=f"Render failed: {proc.stdout[-500:]} {proc.stderr[-500:]}")
+
+    if not os.path.exists(clip_final_path) or os.path.getsize(clip_final_path) == 0:
+        raise HTTPException(status_code=500, detail="Rendered clip file missing or empty")
+
+    # Promote: move from rejected_clips to clips with a live video_url
+    clip["video_url"] = f"/videos/{clip_job_id}/{clip_filename}"
+    clips.append(clip)
+    rejected.pop(req.clip_index)
+
+    updated_result = {"clips": clips, "rejected_clips": rejected, "cost_analysis": result.get("cost_analysis")}
+    if cj:
+        update_clip_job(clip_job_id, clip_count=len(clips), result_json=json.dumps(updated_result))
+    if clip_job_id in jobs:
+        jobs[clip_job_id]["result"] = updated_result
+
+    return {"status": "ok", "clips": clips, "rejected_clips": rejected}
+
+@app.post("/api/clip-jobs/{clip_job_id}/rejected/dismiss")
+async def api_dismiss_rejected_clip(clip_job_id: str, req: RejectedRenderRequest, request: Request):
+    """Permanently remove a rejected clip from the list (user chose to discard it)."""
+    cj = get_clip_job(clip_job_id)
+    result = None
+    if cj and cj.get("result_json"):
+        try:
+            result = json.loads(cj["result_json"])
+        except Exception:
+            pass
+    elif clip_job_id in jobs and jobs[clip_job_id].get("result"):
+        result = jobs[clip_job_id]["result"]
+
+    if not result:
+        raise HTTPException(status_code=404, detail="Clip job result not found")
+
+    rejected = result.get("rejected_clips") or []
+    if req.clip_index < 0 or req.clip_index >= len(rejected):
+        raise HTTPException(status_code=404, detail="Rejected clip not found")
+
+    rejected.pop(req.clip_index)
+    updated_result = {"clips": result.get("clips") or [], "rejected_clips": rejected, "cost_analysis": result.get("cost_analysis")}
+    if cj:
+        update_clip_job(clip_job_id, result_json=json.dumps(updated_result))
+    if clip_job_id in jobs:
+        jobs[clip_job_id]["result"] = updated_result
+
+    return {"status": "ok", "rejected_clips": rejected}
 
 from editor import VideoEditor
 from subtitles import generate_srt, burn_subtitles, generate_srt_from_video

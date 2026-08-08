@@ -9,6 +9,12 @@ services:
       - /app/__pycache__
       - ./output:/app/output
     restart: unless-stopped
+    mem_limit: 2g
+    memswap_limit: 3g
+    environment:
+      - MAX_CONCURRENT_JOBS=1
+      - MPLCONFIGDIR=/tmp
+      - WHISPER_CPU_THREADS=2
     depends_on:
       - bgutil
 

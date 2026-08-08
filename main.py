@@ -836,10 +836,22 @@ def transcribe_video(video_path):
     print("🎙️  Transcribing video with Faster-Whisper (CPU Optimized)...")
     from faster_whisper import WhisperModel
     
-    # Run on CPU with INT8 quantization for speed
-    model = WhisperModel("base", device="cpu", compute_type="int8")
+    cpu_threads = int(os.environ.get("WHISPER_CPU_THREADS", "2"))
     
-    segments, info = model.transcribe(video_path, word_timestamps=True)
+    # Run on CPU with INT8 quantization for speed. cpu_threads is capped low to
+    # bound peak memory on small VPS boxes (each decode thread allocates buffers).
+    model = WhisperModel("base", device="cpu", compute_type="int8", cpu_threads=cpu_threads)
+    
+    # vad_filter skips long silent stretches (large memory+time win on long videos),
+    # beam_size=1 (greedy) keeps the decoder's working set minimal vs beam search.
+    segments, info = model.transcribe(
+        video_path,
+        word_timestamps=True,
+        vad_filter=True,
+        beam_size=1,
+        condition_on_previous_text=True,
+        vad_parameters={"min_silence_duration_ms": 500}
+    )
     
     print(f"   Detected language '{info.language}' with probability {info.language_probability:.2f}")
     

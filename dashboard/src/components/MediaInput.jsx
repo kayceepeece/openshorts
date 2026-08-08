@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Youtube, Upload, FileVideo, X, Loader2 } from 'lucide-react';
 import { getApiUrl } from '../config';
 
-export default function MediaInput({ onProcess, isProcessing, processingLabel }) {
+export default function MediaInput({ onProcess, isProcessing, processingLabel, uploadProgress }) {
     const [youtubeUrlEnabled, setYoutubeUrlEnabled] = useState(true);
     const [mode, setMode] = useState('url'); // 'url' | 'file'
     const [url, setUrl] = useState('');
@@ -140,12 +140,29 @@ export default function MediaInput({ onProcess, isProcessing, processingLabel })
                     {isProcessing ? (
                         <>
                             <Loader2 size={14} className="animate-spin" />
-                            {processingLabel || 'Analyzing Video...'}
+                            {uploadProgress !== null && uploadProgress < 100
+                                ? `Uploading... ${uploadProgress}%`
+                                : (processingLabel || 'Analyzing Video...')}
                         </>
                     ) : (
                         'Generate Clips'
                     )}
                 </button>
+
+                {uploadProgress !== null && uploadProgress < 100 && (
+                    <div style={{ marginTop: '0.625rem' }}>
+                        <div style={{ height: 6, borderRadius: 999, background: 'var(--border)', overflow: 'hidden' }}>
+                            <div
+                                style={{
+                                    height: '100%', borderRadius: 999,
+                                    background: 'var(--primary)',
+                                    width: `${uploadProgress}%`,
+                                    transition: 'width 0.2s ease',
+                                }}
+                            />
+                        </div>
+                    </div>
+                )}
             </form>
         </div>
     );

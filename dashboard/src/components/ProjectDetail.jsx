@@ -40,6 +40,7 @@ export default function ProjectDetail({
 
     const [viewerLoading, setViewerLoading] = useState(false);
     const [isAnalyzing, setIsAnalyzing] = useState(false);
+    const [uploadProgress, setUploadProgress] = useState(null); // 0-100 int or null when not uploading
     const [isClipping, setIsClipping] = useState(false);
     const [customPrompt, setCustomPrompt] = useState('');
     const [expandedClipJobId, setExpandedClipJobId] = useState(null);
@@ -145,19 +146,49 @@ export default function ProjectDetail({
     /* ── Actions ───────────────────────────────────────────────────── */
     const handleUploadProcess = async ({ type, payload, acknowledged }) => {
         setIsAnalyzing(true);
+        setUploadProgress(null);
         try {
-            const formData = new FormData();
-            formData.append('acknowledged', acknowledged ? '1' : '0');
-            if (type === 'url') formData.append('url', payload);
-            else formData.append('file', payload);
+            let result = null;
+            if (type === 'file') {
+                await new Promise((resolve, reject) => {
+                    const formData = new FormData();
+                    formData.append('acknowledged', acknowledged ? '1' : '0');
+                    formData.append('file', payload);
+                    const xhr = new XMLHttpRequest();
+                    xhr.open('POST', getApiUrl(`/api/projects/${project.id}/videos`));
+                    xhr.setRequestHeader('X-Gemini-Key', geminiApiKey);
+                    xhr.upload.onprogress = (e) => {
+                        if (e.lengthComputable) {
+                            const pct = Math.round((e.loaded / e.total) * 100);
+                            setUploadProgress(pct);
+                        }
+                    };
+                    xhr.onload = () => {
+                        let data;
+                        try { data = JSON.parse(xhr.responseText); } catch { data = null; }
+                        if (xhr.status >= 200 && xhr.status < 300) {
+                            result = data;
+                            resolve();
+                        } else {
+                            reject(new Error(data?.detail || `Failed to submit video (${xhr.status})`));
+                        }
+                    };
+                    xhr.onerror = () => reject(new Error('Network error during upload'));
+                    xhr.send(formData);
+                });
+            } else {
+                const formData = new FormData();
+                formData.append('acknowledged', acknowledged ? '1' : '0');
+                formData.append('url', payload);
+                const res = await fetch(getApiUrl(`/api/projects/${project.id}/videos`), {
+                    method: 'POST',
+                    headers: { 'X-Gemini-Key': geminiApiKey },
+                    body: formData
+                });
+                if (!res.ok) { const err = await res.json(); throw new Error(err.detail || 'Failed to submit video'); }
+                result = await res.json();
+            }
 
-            const res = await fetch(getApiUrl(`/api/projects/${project.id}/videos`), {
-                method: 'POST',
-                headers: { 'X-Gemini-Key': geminiApiKey },
-                body: formData
-            });
-            if (!res.ok) { const err = await res.json(); throw new Error(err.detail || 'Failed to submit video'); }
-            const result = await res.json();
             const newVideoObj = {
                 id: result.video_id, project_id: project.id, status: 'analyzing',
                 source_type: type,
@@ -170,6 +201,7 @@ export default function ProjectDetail({
             alert(e.message);
         } finally {
             setIsAnalyzing(false);
+            setUploadProgress(null);
         }
     };
 
@@ -394,7 +426,7 @@ export default function ProjectDetail({
                         <h3 style={{ fontSize: '0.8125rem', fontWeight: 600, color: 'var(--ink)', margin: '0 0 0.75rem', display: 'flex', alignItems: 'center', gap: 6 }}>
                             <Plus size={14} style={{ color: 'var(--primary)' }} /> Analyze New Video
                         </h3>
-                        <MediaInput onProcess={handleUploadProcess} isProcessing={isAnalyzing} />
+                        <MediaInput onProcess={handleUploadProcess} isProcessing={isAnalyzing} uploadProgress={uploadProgress} />
                     </section>
 
                     {/* Videos list */}

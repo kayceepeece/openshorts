@@ -146,6 +146,7 @@ const UserProfileSelector = ({ profiles, selectedUserId, onSelect }) => {
 /* ─── Constants ─────────────────────────────────────────────────────── */
 const SESSION_KEY = 'openshorts_session';
 const SESSION_MAX_AGE = 3600000;
+const PROJECT_KEY = 'openshorts_current_project';
 
 const pollJob = async (jobId) => {
   const res = await fetch(getApiUrl(`/api/status/${jobId}`));
@@ -929,6 +930,21 @@ function App() {
       if (res.ok) { const d = await res.json(); setProjects(d.projects || []); }
     } catch { /* ignore network errors */ }
   };
+
+  // Restore the last open project after projects load (refresh persistence)
+  useEffect(() => {
+    if (projects.length === 0 || currentProject) return;
+    const savedId = localStorage.getItem(PROJECT_KEY);
+    if (!savedId) return;
+    const saved = projects.find(p => p.id === savedId);
+    if (saved) setCurrentProject(saved);
+  }, [projects, currentProject]);
+
+  // Persist the currently open project
+  useEffect(() => {
+    if (currentProject?.id) localStorage.setItem(PROJECT_KEY, currentProject.id);
+    else localStorage.removeItem(PROJECT_KEY);
+  }, [currentProject]);
 
   useEffect(() => { fetchProjects(); }, []);
 

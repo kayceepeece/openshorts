@@ -1,11 +1,97 @@
+# OpenShorts Prompt v1.0.0 — 2026-06-29
+# File: dossier_gaming.txt
+
 ## Overview
-## Timeline (with [MM:SS–MM:SS] format)
-## Game Matches & Phases (rounds, matches, maps, or levels)
-## Highlights & Outplays (extraordinary plays, kills, or combos)
-## Fails, Deaths, and Rage Moments (timestamped errors or dramatic reactions)
+- One-sentence summary of the stream / match / video.
+- Game title(s) played.
+- Stream or video format (ranked match, tournament, casual stream, let's play, speedrun, etc.).
+- Source quality notes (stream overlay quality, game audio, mic clarity, chat visibility, lag or technical issues).
+
+## Timeline
+Break the video into logical [MM:SS–MM:SS] segments. For each segment, include:
+- What is shown visually (gameplay, camera on streamer, overlay, chat).
+- What is said by streamer / teammates / opponents.
+- Who appears.
+- What changes (game phase, score, health, tension, mood).
+- Clip potential (low / medium / high) and one-sentence reason.
+
+## Game Matches & Phases
+List matches, rounds, maps, levels, or boss fights with:
+- Timestamp.
+- Game / mode / map / level name if identifiable.
+- Outcome (win, loss, draw, checkpoint reached).
+- Key turning points.
+- Mark uncertainty if the game name or mode is inferred.
+
+## Highlights & Outplays
+For every clutch win, extraordinary play, multi-kill, combo, or outplay:
+
+| Timestamp | Player / Streamer | Setup | Play Type | Result | Reaction | Clip-Worthy |
+|---|---|---|---|---|---|---|
+| 00:00 | name | context before the play | clutch / outplay / combo / multi-kill / boss kill / comeback | success / partial / fail | streamer / teammate / chat reaction | yes / no / maybe + reason |
+
+Also note:
+- Enemy / opponent pressure leading up to the play.
+- Any slow-motion, replay, or highlight replay.
+- Whether the moment changed momentum or won the match.
+
+## Fails, Deaths, and Rage Moments
+For every fail, death, misplay, bug, or dramatic rage reaction:
+- Timestamp.
+- What happened.
+- Cause (mistake, bad luck, opponent play, bug, lag).
+- Streamer / player reaction (rage, laughter, disbelief).
+- Clip-worthy? (yes / no / maybe) and reason.
+
 ## Funny Moments & Banter
-## Participants / Streamers & Teammates/Opponents
+For every funny exchange, joke, meme reference, or comedic timing moment:
+- Timestamp.
+- Setup.
+- Punchline or comedic beat.
+- Who was involved.
+- Clip-worthy? (yes / no / maybe) and reason.
+
+## Participants / Streamers & Teammates / Opponents
+### Confirmed names
+For each: name / gamertag, role, and how identified (on-screen name, spoken, overlay).
+
+### Inferred / unknown people
+For each: visible description, voice characteristics, role, and distinguishing features. Mark as inferred.
+
 ## Quotes & Catchphrases
-## Best Clips (ranked highlighting clutch wins, epic fails, or loud reactions)
+Include short verbatim quotes only when clearly audible and important. Include speaker and timestamp.
+
+## Best Clips
+Rank the top moments for short-form clipping. For each:
+- Timestamp range.
+- Why it works as a clip (clutch win, epic fail, loud reaction, comedic beat).
+- Suggested hook (first 2–3 seconds).
+- Suggested payoff / ending.
+- Standalone context score (1–3): does it make sense without the full stream?
+
+### How To Clip Compliance (evaluate EVERY candidate)
+Each ranked clip must pass the three How To Clip rules. Record the result for every candidate.
+  A) HOOK CHECK — the first 2–3 seconds must open with EITHER a bold statement OR a bold question.
+     REJECT or re-cut anything opening with small talk, filler, pleasantries, or mid-thought context.
+     If the strongest content has a weak open, use hook transplanting: pull a bold line made later in
+     the video to the front (even repeated). The hook matters more than preserving the original order.
+  B) POINT CHECK — the core value / play / payoff must arrive by the 10-second mark.
+     Cut dead space, "um"/"uh", repetition, rambling, and thinking aloud ("let me think about how to say this").
+     Compress so the point is clear within 10 seconds even if the clip itself runs longer.
+  C) COMPLETE THOUGHT — the clip must end on a finished, rounded-out thought (satisfied, not cut off).
+     REJECT clips that stop mid-play or end on an unresolved "but here's the thing…" with no resolution.
+Reject any clip failing B or C. For a failed hook (A) with otherwise strong content, re-cut the start
+(hook transplanting) instead of dropping the clip. Label each ranked clip with its compliance status,
+e.g. "A✓ B✓ C✓ D3" or "A✗→transplant B✓ C✓ D2".
+
 ## Ambiguities
-## Editor Notes (action peaks, gamer reactions, short-form potential)
+List anything unclear, partially hidden, cut off, or not confidently identifiable (game names, player names, scores, chat messages).
+
+## Editor Notes
+- Strongest hook in the video.
+- Best cold-open start point.
+- Likely short-form clips.
+- Likely long-form recap segments.
+- Streamer reactions worth using.
+- Any replay or slow-motion moments that strengthen a clip.
+- Gameplay segments to avoid (dead time, loading screens, repetitive grinding).

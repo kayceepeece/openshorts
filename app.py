@@ -106,6 +106,17 @@ def init_db():
         except sqlite3.OperationalError:
             pass  # Column already exists
 
+    # Add new columns to existing videos table
+    for col_def in [
+        ("custom_instructions", "TEXT"),
+    ]:
+        col_name, col_type = col_def
+        try:
+            conn.execute(f"ALTER TABLE videos ADD COLUMN {col_name} {col_type}")
+            print(f"📦 Migrated videos table: added column '{col_name}'")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
     # Check if we need to migrate from old 'jobs' table
     cursor = conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='jobs'")
     has_old_jobs = cursor.fetchone()
@@ -393,7 +404,7 @@ def update_video(video_id: str, **fields) -> Optional[dict]:
     updates = []
     params = []
     for field, val in fields.items():
-        if field in ("status", "transcript_json", "dossier_text", "duration_seconds", "completed_at", "error"):
+        if field in ("status", "transcript_json", "dossier_text", "duration_seconds", "completed_at", "error", "custom_instructions"):
             updates.append(f"{field} = ?")
             params.append(val)
     if updates:
@@ -478,7 +489,7 @@ def get_video_file_path(video_id: str) -> Optional[str]:
     return None
 
 def ensure_job_in_memory(job_id: str) -> bool:
-    if job_id in jobs:
+    if dict.__contains__(jobs, job_id):
         return True
     
     conn = _db_conn()
@@ -711,6 +722,23 @@ async def cleanup_jobs():
         except Exception as e:
             print(f"⚠️ Cleanup error: {e}")
 
+def _requeue_pending_jobs():
+    """Mark jobs left in queued/processing state as failed after server restart."""
+    conn = _db_conn()
+    try:
+        rows = conn.execute(
+            "SELECT id FROM clip_jobs WHERE status IN ('queued', 'processing')"
+        ).fetchall()
+        for row in rows:
+            job_id = row['id']
+            print(f"⚠️ Marking orphaned clip job as failed (needs API key): {job_id}")
+            conn.execute("UPDATE clip_jobs SET status='failed', error='Server restarted - re-trigger from UI' WHERE id=?", (job_id,))
+        conn.commit()
+    except Exception as e:
+        print(f"⚠️ Requeue cleanup error: {e}")
+    finally:
+        conn.close()
+
 async def process_queue():
     """Background worker to process jobs from the queue with concurrency limit."""
     print(f"🚀 Job Queue Worker started with {MAX_CONCURRENT_JOBS} concurrent slots.")
@@ -748,6 +776,8 @@ async def run_job_wrapper(job_id):
 async def lifespan(app: FastAPI):
     # Initialize database
     init_db()
+    # Re-queue jobs that were left in 'queued' or 'processing' state
+    _requeue_pending_jobs()
     # Start worker and cleanup
     worker_task = asyncio.create_task(process_queue())
     cleanup_task = asyncio.create_task(cleanup_jobs())
@@ -822,6 +852,7 @@ async def run_job(job_id, job_data):
         t_log.daemon = True
         t_log.start()
         
+        last_reported_clip_count = 0
         while process.poll() is None:
             await asyncio.sleep(2)
             
@@ -854,6 +885,14 @@ async def run_job(job_id, job_data):
                             
                             if ready_clips:
                                  jobs[job_id]['result'] = {'clips': ready_clips, 'cost_analysis': cost_analysis}
+                                 # Persist partial results to DB so UI can fetch incrementally
+                                 if len(ready_clips) > last_reported_clip_count:
+                                     last_reported_clip_count = len(ready_clips)
+                                     partial_result = json.dumps({'clips': ready_clips, 'cost_analysis': cost_analysis})
+                                     if job_type == 'clip_generation':
+                                         update_clip_job(job_id, clip_count=len(ready_clips), result_json=partial_result)
+                                     else:
+                                         save_job(job_id, clip_count=len(ready_clips), result_json=partial_result)
                 except Exception:
                     pass
 
@@ -1160,6 +1199,9 @@ class ClipJobCreate(BaseModel):
     video_ids: List[str]
     detection_prompt: Optional[str] = None
 
+class VideoUpdate(BaseModel):
+    custom_instructions: Optional[str] = None
+
 @app.post("/api/projects")
 async def api_create_project(project: ProjectCreate):
     return create_project(
@@ -1278,6 +1320,8 @@ async def api_analyze_video(
         cmd.append("--dossier")
     if p.get("content_type"):
         cmd.extend(["--content-type", p["content_type"]])
+    if p.get("custom_instructions"):
+        cmd.extend(["--custom-prompt", p["custom_instructions"].strip()])
 
     # Create the database record
     conn = _db_conn()
@@ -1374,6 +1418,21 @@ async def api_delete_video(video_id: str):
     delete_video(video_id)
     return {"status": "success"}
 
+@app.put("/api/videos/{video_id}")
+async def api_update_video(video_id: str, req: VideoUpdate):
+    vid = get_video(video_id)
+    if not vid:
+        raise HTTPException(status_code=404, detail="Video not found")
+    updated = update_video(video_id, custom_instructions=req.custom_instructions)
+    if updated and updated.get("transcript_json"):
+        try:
+            updated["transcript"] = json.loads(updated["transcript_json"])
+        except Exception:
+            updated["transcript"] = None
+    else:
+        updated["transcript"] = None
+    return updated
+
 @app.post("/api/projects/{project_id}/clip")
 async def generate_clips(project_id: str, req: ClipJobCreate, request: Request):
     p = get_project(project_id)
@@ -1435,12 +1494,16 @@ async def generate_clips(project_id: str, req: ClipJobCreate, request: Request):
     if p.get("content_type"):
         cmd.extend(["--content-type", p["content_type"]])
 
-    # Build the final prompt: project custom_instructions first, then per-job detection_prompt
+    # Build the final prompt: project instructions → per-video instructions → per-job prompt
     prompt_parts = []
     if p.get("custom_instructions"):
-        prompt_parts.append(p["custom_instructions"].strip())
+        prompt_parts.append(f"PROJECT INSTRUCTIONS:\n{p['custom_instructions'].strip()}")
+    for vid_id in req.video_ids:
+        v = get_video(vid_id)
+        if v and v.get("custom_instructions"):
+            prompt_parts.append(f"VIDEO INSTRUCTIONS FOR VIDEO {vid_id}:\n{v['custom_instructions'].strip()}")
     if req.detection_prompt:
-        prompt_parts.append(req.detection_prompt.strip())
+        prompt_parts.append(f"JOB-SPECIFIC INSTRUCTIONS:\n{req.detection_prompt.strip()}")
     if prompt_parts:
         cmd.extend(["--prompt", "\n\n".join(prompt_parts)])
 

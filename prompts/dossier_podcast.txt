@@ -1,11 +1,90 @@
+# OpenShorts Prompt v1.0.0 — 2026-06-29
+# File: dossier_podcast.txt
+
 ## Overview
-## Timeline (with [MM:SS–MM:SS] format)
+- One-sentence summary of the episode.
+- Podcast format (interview, panel discussion, solo monologue, storytelling, debate, etc.).
+- Main topic or theme.
+- Source quality notes (audio clarity, crosstalk, background noise, editing, video or audio-only).
+
+## Timeline
+Break the video into logical [MM:SS–MM:SS] segments. For each segment, include:
+- What is discussed.
+- Who is speaking.
+- What changes (topic shift, energy shift, emotional turn, disagreement).
+- Clip potential (low / medium / high) and one-sentence reason.
+
 ## Key Topics & Conversational Segments
-## Hot Takes (controversial, surprising, or highly opinionated statements with speaker names)
-## Comedic Moments & Laughs (timestamped setup and payoff)
+List every major topic or conversational thread with:
+- Timestamp range.
+- Core claim or question.
+- Who drove the segment.
+- Whether the segment reached a conclusion or was left open.
+
+## Hot Takes
+For every controversial, surprising, counterintuitive, or strongly opinionated statement:
+- Timestamp.
+- Speaker.
+- The hot take in one sentence.
+- Pushback or agreement from others.
+- Clip potential and why it would perform on social media.
+
+## Comedic Moments & Laughs
+For every setup/punchline moment, running gag, or burst of laughter:
+- Timestamp.
+- Setup.
+- Punchline or comedic beat.
+- Who delivered it.
+- Clip-worthy? (yes / no / maybe) and reason.
+
 ## Notable Admissions & Reveals
+For every personal story, confession, behind-the-scenes detail, or new information revealed:
+- Timestamp.
+- Speaker.
+- What was admitted or revealed.
+- Why it matters.
+- Certainty: confirmed or inferred.
+
 ## Participants / Hosts & Guests
+### Confirmed names
+For each: name, role (host / guest / co-host), and how identified.
+
+### Inferred / unknown people
+For each: voice characteristics, speaking style, role, and distinguishing features. Mark as inferred.
+
 ## Quotes & Memorable Catchphrases
-## Best Clips (ranked highlighting conversational hooks and reactions)
+Include short verbatim quotes only when clearly audible and important. Include speaker and timestamp.
+
+## Best Clips
+Rank the top moments for short-form clipping. For each:
+- Timestamp range.
+- Why it works as a clip (hot take, laugh, reveal, emotional beat, debate).
+- Suggested hook (first 2–3 seconds).
+- Suggested payoff / ending.
+- Standalone context score (1–3): does it make sense without the full episode?
+
+### How To Clip Compliance (evaluate EVERY candidate)
+Each ranked clip must pass the three How To Clip rules. Record the result for every candidate.
+  A) HOOK CHECK — the first 2–3 seconds must open with EITHER a bold statement OR a bold question.
+     REJECT or re-cut anything opening with small talk, filler, pleasantries, or mid-thought context.
+     If the strongest content has a weak open, use hook transplanting: pull a bold line made later in
+     the episode to the front (even if repeated). The hook matters more than preserving the original order.
+  B) POINT CHECK — the hot take / reveal / payoff must arrive by the 10-second mark.
+     Cut dead space, "um"/"uh", repetition, rambling, and thinking aloud ("let me think about how to say this").
+     Compress so the point is clear within 10 seconds even if the clip itself runs longer.
+  C) COMPLETE THOUGHT — the clip must end on a finished, rounded-out thought (satisfied, not cut off).
+     REJECT clips that stop mid-thought or end on an unresolved "but here's the thing…" with no resolution.
+Reject any clip failing B or C. For a failed hook (A) with otherwise strong content, re-cut the start
+(hook transplanting) instead of dropping the clip. Label each ranked clip with its compliance status,
+e.g. "A✓ B✓ C✓ D3" or "A✗→transplant B✓ C✓ D2".
+
 ## Ambiguities
-## Editor Notes (conversational hooks, humor, drama, short-form potential)
+List anything unclear, partially obscured, cut off, or not confidently identifiable (names, references, facts).
+
+## Editor Notes
+- Strongest hook in the episode.
+- Best cold-open start point.
+- Likely short-form clips.
+- Likely long-form recap segments.
+- Segments with dead air, filler, or repetition to avoid.
+- Moments where jump cuts would tighten pacing.

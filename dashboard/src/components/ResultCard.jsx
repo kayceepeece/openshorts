@@ -1,23 +1,46 @@
 import React, { useState, useEffect } from 'react';
-import { Download, Share2, Instagram, Youtube, Video, CheckCircle, AlertCircle, X, Loader2, Copy, Wand2, Type, Calendar, Clock, Languages } from 'lucide-react';
+import { Download, Share2, Youtube, Instagram, Video, CheckCircle, AlertCircle, Loader2, Wand2, Type, Calendar, Languages } from 'lucide-react';
 import { getApiUrl } from '../config';
 import SubtitleModal from './SubtitleModal';
 import HookModal from './HookModal';
 import TranslateModal from './TranslateModal';
+import ModalShell from './ModalShell';
 import { renderInBrowser } from '../lib/renderInBrowser';
+
+const TikTokMark = ({ size = 14, className }) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" className={className}>
+        <path d="M19.589 6.686a4.793 4.793 0 0 1-3.77-4.245V2h-3.445v13.672a2.896 2.896 0 0 1-5.201 1.743l-.002-.001.002.001a2.895 2.895 0 0 1 3.183-4.51v-3.5a6.329 6.329 0 0 0-5.394 10.692 6.33 6.33 0 0 0 10.857-4.424V8.687a8.182 8.182 0 0 0 4.773 1.526V6.79a4.831 4.831 0 0 1-1.003-.104z" />
+    </svg>
+);
+
+const actionBtn = (handle, label, Icon, busy, kind, busyLabel) => (
+    <button
+        onClick={handle}
+        disabled={busy}
+        className={`os-btn os-btn-sm ${
+            kind === 'primary' ? 'os-btn-primary'
+            : kind === 'hook' ? 'os-btn-secondary'
+            : kind === 'post' ? 'os-btn-primary'
+            : kind === 'download' ? 'os-btn-ghost'
+            : 'os-btn-secondary'
+        }`}
+        style={{ justifyContent: 'center', gap: 5 }}
+    >
+        {busy ? <Loader2 size={12} className="animate-spin" /> : <Icon size={12} />}
+        {busy && busyLabel ? busyLabel : label}
+    </button>
+);
 
 export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUserId, geminiApiKey, elevenLabsKey, onPlay, onPause }) {
     const [showModal, setShowModal] = useState(false);
     const [showSubtitleModal, setShowSubtitleModal] = useState(false);
+    const [showHookModal, setShowHookModal] = useState(false);
+    const [showTranslateModal, setShowTranslateModal] = useState(false);
     const videoRef = React.useRef(null);
     const originalVideoUrl = getApiUrl(clip.video_url); // Never changes — used for Remotion previews
     const [currentVideoUrl, setCurrentVideoUrl] = useState(originalVideoUrl);
 
-    const [platforms, setPlatforms] = useState({
-        tiktok: true,
-        instagram: true,
-        youtube: true
-    });
+    const [platforms, setPlatforms] = useState({ tiktok: true, instagram: true, youtube: true });
     const [postTitle, setPostTitle] = useState("");
     const [postDescription, setPostDescription] = useState("");
     const [isScheduling, setIsScheduling] = useState(false);
@@ -30,16 +53,12 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
     const [isSubtitling, setIsSubtitling] = useState(false);
     const [isHooking, setIsHooking] = useState(false);
     const [isTranslating, setIsTranslating] = useState(false);
-    const [showHookModal, setShowHookModal] = useState(false);
-    const [showTranslateModal, setShowTranslateModal] = useState(false);
     const [editError, setEditError] = useState(null);
 
     const [clipDuration, setClipDuration] = useState(clip.end && clip.start ? clip.end - clip.start : 30);
 
-    // Accumulate Remotion layers across operations
     const [activeLayers, setActiveLayers] = useState({ subtitles: null, hook: null, effects: null });
 
-    // Fetch clip duration from transcript endpoint
     useEffect(() => {
         if (!jobId || index === undefined) return;
         fetch(getApiUrl(`/api/clip/${jobId}/${index}/transcript`))
@@ -50,7 +69,6 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
             .catch(() => {});
     }, [jobId, index]);
 
-    // Initialize/Reset form when modal opens
     useEffect(() => {
         if (showModal) {
             setPostTitle(clip.video_title_for_youtube_short || "Viral Short");
@@ -60,6 +78,18 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
             setPostResult(null);
         }
     }, [showModal, clip]);
+
+    const renderLayers = async (layers) => {
+        const blobUrl = await renderInBrowser({
+            videoUrl: originalVideoUrl,
+            durationInSeconds: clipDuration,
+            subtitles: layers.subtitles,
+            hook: layers.hook,
+            effects: layers.effects,
+        });
+        setCurrentVideoUrl(blobUrl);
+        if (videoRef.current) videoRef.current.load();
+    };
 
     const handleAutoEdit = async () => {
         setIsEditing(true);
@@ -74,10 +104,7 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
             // Try Remotion effects endpoint first
             const effectsRes = await fetch(getApiUrl('/api/effects/generate'), {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-Gemini-Key': apiKey
-                },
+                headers: { 'Content-Type': 'application/json', 'X-Gemini-Key': apiKey },
                 body: JSON.stringify({
                     job_id: jobId,
                     clip_index: index,
@@ -90,15 +117,7 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
                 if (data.effects && data.effects.segments) {
                     const newLayers = { ...activeLayers, effects: data.effects };
                     setActiveLayers(newLayers);
-                    const blobUrl = await renderInBrowser({
-                        videoUrl: originalVideoUrl,
-                        durationInSeconds: clipDuration,
-                        subtitles: newLayers.subtitles,
-                        hook: newLayers.hook,
-                        effects: newLayers.effects,
-                    });
-                    setCurrentVideoUrl(blobUrl);
-                    if (videoRef.current) videoRef.current.load();
+                    await renderLayers(newLayers);
                     return;
                 }
             }
@@ -106,10 +125,7 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
             // Fallback: legacy FFmpeg edit endpoint
             const res = await fetch(getApiUrl('/api/edit'), {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-Gemini-Key': apiKey
-                },
+                headers: { 'Content-Type': 'application/json', 'X-Gemini-Key': apiKey },
                 body: JSON.stringify({
                     job_id: jobId,
                     clip_index: index,
@@ -122,7 +138,8 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
                 try {
                     const jsonErr = JSON.parse(errText);
                     throw new Error(jsonErr.detail || errText);
-                } catch (e) {
+                } catch {
+
                     throw new Error(errText);
                 }
             }
@@ -130,9 +147,7 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
             const data = await res.json();
             if (data.new_video_url) {
                 setCurrentVideoUrl(getApiUrl(data.new_video_url));
-                if (videoRef.current) {
-                    videoRef.current.load();
-                }
+                if (videoRef.current) videoRef.current.load();
             }
 
         } catch (e) {
@@ -148,23 +163,13 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
         setEditError(null);
         try {
             if (options.remotion) {
-                // Accumulate layer and render all layers together
                 const newLayers = { ...activeLayers, subtitles: options.remotion };
                 setActiveLayers(newLayers);
-                const blobUrl = await renderInBrowser({
-                    videoUrl: originalVideoUrl,
-                    durationInSeconds: clipDuration,
-                    subtitles: newLayers.subtitles,
-                    hook: newLayers.hook,
-                    effects: newLayers.effects,
-                });
-                setCurrentVideoUrl(blobUrl);
-                if (videoRef.current) videoRef.current.load();
+                await renderLayers(newLayers);
                 setShowSubtitleModal(false);
                 return;
             }
 
-            // Fallback: legacy FFmpeg
             const res = await fetch(getApiUrl('/api/subtitle'), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -203,23 +208,13 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
         setEditError(null);
         try {
             if (hookData.remotion) {
-                // Accumulate layer and render all layers together
                 const newLayers = { ...activeLayers, hook: hookData.remotion };
                 setActiveLayers(newLayers);
-                const blobUrl = await renderInBrowser({
-                    videoUrl: originalVideoUrl,
-                    durationInSeconds: clipDuration,
-                    subtitles: newLayers.subtitles,
-                    hook: newLayers.hook,
-                    effects: newLayers.effects,
-                });
-                setCurrentVideoUrl(blobUrl);
-                if (videoRef.current) videoRef.current.load();
+                await renderLayers(newLayers);
                 setShowHookModal(false);
                 return;
             }
 
-            // Fallback: legacy FFmpeg
             const payload = typeof hookData === 'string'
                 ? { text: hookData, position: 'top', size: 'M' }
                 : hookData;
@@ -253,12 +248,10 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
     };
 
     const handleTranslate = async (options) => {
-        console.log('[Translate] Starting translation with options:', options);
         setIsTranslating(true);
         setEditError(null);
         try {
             const apiKey = elevenLabsKey;
-            console.log('[Translate] API Key available:', !!apiKey);
 
             if (!apiKey) {
                 throw new Error("ElevenLabs API Key is missing. Please set it in Settings.");
@@ -270,44 +263,31 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
                 target_language: options.targetLanguage,
                 input_filename: currentVideoUrl.split('/').pop()
             };
-            console.log('[Translate] Request body:', requestBody);
-            console.log('[Translate] Sending request to /api/translate');
 
             const res = await fetch(getApiUrl('/api/translate'), {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                    'X-ElevenLabs-Key': apiKey
-                },
+                headers: { 'Content-Type': 'application/json', 'X-ElevenLabs-Key': apiKey },
                 body: JSON.stringify(requestBody)
             });
 
-            console.log('[Translate] Response status:', res.status);
-
             if (!res.ok) {
                 const errText = await res.text();
-                console.error('[Translate] Error response:', errText);
                 try {
                     const jsonErr = JSON.parse(errText);
                     throw new Error(jsonErr.detail || errText);
-                } catch (e) {
-                    if (e.message !== errText) throw e;
+                } catch {
                     throw new Error(errText);
                 }
             }
 
             const data = await res.json();
-            console.log('[Translate] Success response:', data);
             if (data.new_video_url) {
                 setCurrentVideoUrl(getApiUrl(data.new_video_url));
-                if (videoRef.current) {
-                    videoRef.current.load();
-                }
+                if (videoRef.current) videoRef.current.load();
                 setShowTranslateModal(false);
             }
 
         } catch (e) {
-            console.error('[Translate] Exception:', e);
             setEditError(e.message);
             setTimeout(() => setEditError(null), 5000);
         } finally {
@@ -347,9 +327,7 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
             };
 
             if (isScheduling && scheduleDate) {
-                // Convert to ISO-8601
                 payload.scheduled_date = new Date(scheduleDate).toISOString();
-                // Optional: pass timezone if needed, backend defaults to UTC or we can send user's timezone
                 payload.timezone = Intl.DateTimeFormat().resolvedOptions().timeZone;
             }
 
@@ -364,7 +342,8 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
                 try {
                     const jsonErr = JSON.parse(errText);
                     throw new Error(jsonErr.detail || errText);
-                } catch (e) {
+                } catch {
+
                     throw new Error(errText);
                 }
             }
@@ -382,272 +361,219 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
         }
     };
 
+    const handleDownload = async () => {
+        try {
+            const response = await fetch(currentVideoUrl);
+            if (!response.ok) throw new Error('Download failed');
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.style.display = 'none';
+            a.href = url;
+            a.download = `clip-${index + 1}.mp4`;
+            document.body.appendChild(a);
+            a.click();
+            window.URL.revokeObjectURL(url);
+            document.body.removeChild(a);
+        } catch {
+            window.open(currentVideoUrl, '_blank');
+        }
+    };
+
     return (
-        <div className="bg-surface border border-white/5 rounded-2xl overflow-hidden flex flex-col md:flex-row group hover:border-white/10 transition-all animate-[fadeIn_0.5s_ease-out] min-h-[300px] h-auto" style={{ animationDelay: `${index * 0.1}s` }}>
-            {/* Left: Video Preview (Responsive Width) */}
-            <div className="w-full md:w-[180px] lg:w-[200px] bg-black relative shrink-0 aspect-[9/16] md:aspect-auto group/video">
-                <video
-                    ref={videoRef}
-                    src={currentVideoUrl}
-                    controls
-                    className="w-full h-full object-cover"
-                    playsInline
-                    onPlay={() => {
-                        const currentTime = videoRef.current ? videoRef.current.currentTime : 0;
-                        onPlay && onPlay(clip.start + currentTime);
-                    }}
-                    onPause={() => onPause && onPause()}
-                    onEnded={() => {
-                        if (videoRef.current) {
-                            videoRef.current.currentTime = 0;
-                            videoRef.current.play();
-                        }
-                    }}
-                />
-                <div className="absolute top-3 left-3 flex gap-2">
-                    <span className="bg-black/60 backdrop-blur-md text-white text-[10px] font-bold px-2 py-1 rounded-md border border-white/10 uppercase tracking-wide">
+        <div className="os-panel" style={{ display: 'flex', flexDirection: 'column', overflow: 'hidden', minHeight: 300, maxHeight: 560 }}>
+            <div style={{ display: 'flex', gap: 0, flex: 1, minHeight: 0, flexDirection: 'column' }}>
+                {/* Video preview */}
+                <div style={{ position: 'relative', background: 'var(--bg)', flexShrink: 0, aspectRatio: '9/16', maxHeight: 240, minHeight: 160 }}>
+                    <video
+                        ref={videoRef}
+                        src={currentVideoUrl}
+                        controls
+                        style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                        playsInline
+                        onPlay={() => {
+                            const currentTime = videoRef.current ? videoRef.current.currentTime : 0;
+                            onPlay && onPlay(clip.start + currentTime);
+                        }}
+                        onPause={() => onPause && onPause()}
+                        onEnded={() => {
+                            if (videoRef.current) {
+                                videoRef.current.currentTime = 0;
+                                videoRef.current.play();
+                            }
+                        }}
+                    />
+                    <span className="os-chip os-chip-default" style={{ position: 'absolute', top: 8, left: 8 }}>
                         Clip {index + 1}
                     </span>
-                </div>
 
-                {/* Auto Edit Overlay if Processing */}
-                {isEditing && (
-                    <div className="absolute inset-0 bg-black/60 backdrop-blur-sm flex flex-col items-center justify-center z-10 p-4 text-center">
-                        <Loader2 size={32} className="text-primary animate-spin mb-3" />
-                        <span className="text-xs font-bold text-white uppercase tracking-wider">AI Magic in Progress...</span>
-                        <span className="text-[10px] text-zinc-400 mt-1">Applying viral edits & zooms</span>
-                    </div>
-                )}
-            </div>
-
-            {/* Right: Content & Details */}
-            <div className="flex-1 p-4 md:p-5 flex flex-col bg-[#121214] overflow-hidden min-w-0">
-                <div className="mb-4">
-                    <h3 className="text-base font-bold text-white leading-tight line-clamp-2 mb-2 break-words" title={clip.video_title_for_youtube_short}>
-                        {clip.video_title_for_youtube_short || "Viral Clip Generated"}
-                    </h3>
-                    <div className="flex flex-wrap gap-2 text-[10px] text-zinc-500 font-mono">
-                        <span className="bg-white/5 px-1.5 py-0.5 rounded border border-white/5 shrink-0">{Math.floor(clip.end - clip.start)}s</span>
-                        <span className="bg-white/5 px-1.5 py-0.5 rounded border border-white/5 shrink-0">#shorts</span>
-                        <span className="bg-white/5 px-1.5 py-0.5 rounded border border-white/5 shrink-0">#viral</span>
-                    </div>
-                </div>
-
-                {/* Scrollable Descriptions Area */}
-                <div className="flex-1 overflow-y-auto custom-scrollbar space-y-3 pr-2 mb-4">
-                    {/* YouTube */}
-                    <div className="bg-black/20 rounded-lg p-3 border border-white/5">
-                        <div className="flex items-center gap-2 text-[10px] font-bold text-red-400 mb-1.5 uppercase tracking-wider">
-                            <Youtube size={12} className="shrink-0" /> <span className="truncate">YouTube Title</span>
+                    {isEditing && (
+                        <div style={{
+                            position: 'absolute', inset: 0, zIndex: 'var(--z-sticky)',
+                            background: 'oklch(0.04 0 0 / 0.72)',
+                            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 10,
+                        }}>
+                            <Loader2 size={26} className="animate-spin" style={{ color: 'var(--primary)' }} />
+                            <span style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--ink)' }}>AI Magic in Progress...</span>
+                            <span style={{ fontSize: '0.6875rem', color: 'var(--muted)' }}>Applying viral edits &amp; zooms</span>
                         </div>
-                        <p className="text-xs text-zinc-300 select-all break-words">
+                    )}
+                </div>
+
+                {/* Content */}
+                <div className="os-scroll" style={{ flex: 1, minWidth: 0, padding: '1rem', display: 'flex', flexDirection: 'column', gap: '0.75rem', overflowY: 'auto' }}>
+                    <div>
+                        <h3 style={{ fontSize: '0.9375rem', fontWeight: 600, color: 'var(--ink)', margin: '0 0 6px', lineHeight: 1.35 }} title={clip.video_title_for_youtube_short}>
+                            {clip.video_title_for_youtube_short || "Viral Clip Generated"}
+                        </h3>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+                            <span className="os-chip os-chip-default">{Math.floor(clip.end - clip.start)}s</span>
+                            <span className="os-chip os-chip-default">#shorts</span>
+                            <span className="os-chip os-chip-default">#viral</span>
+                        </div>
+                    </div>
+
+                    <div className="os-panel-2" style={{ padding: '0.625rem 0.75rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.6875rem', fontWeight: 600, color: 'var(--muted)', marginBottom: 4 }}>
+                            <Youtube size={11} style={{ color: 'var(--error)' }} />
+                            YouTube Title
+                        </div>
+                        <p style={{ fontSize: '0.8125rem', color: 'var(--muted)', margin: 0, userSelect: 'all', overflowWrap: 'break-word' }}>
                             {clip.video_title_for_youtube_short || "Viral Short Video"}
                         </p>
                     </div>
 
-                    {/* TikTok / IG */}
-                    <div className="bg-black/20 rounded-lg p-3 border border-white/5">
-                        <div className="flex items-center gap-2 text-[10px] font-bold text-zinc-400 mb-1.5 uppercase tracking-wider">
-                            <Video size={12} className="text-cyan-400 shrink-0" />
-                            <span className="text-zinc-500">/</span>
-                            <Instagram size={12} className="text-pink-400 shrink-0" />
-                            <span className="truncate">Caption</span>
+                    <div className="os-panel-2" style={{ padding: '0.625rem 0.75rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.6875rem', fontWeight: 600, color: 'var(--muted)', marginBottom: 4 }}>
+                            <Instagram size={11} style={{ color: 'var(--accent)' }} />
+                            Caption
                         </div>
-                        <p className="text-xs text-zinc-300 line-clamp-3 hover:line-clamp-none transition-all cursor-pointer select-all break-words">
+                        <p style={{ fontSize: '0.8125rem', color: 'var(--muted)', margin: 0, userSelect: 'all', overflowWrap: 'break-word' }}>
                             {clip.video_description_for_tiktok || clip.video_description_for_instagram}
                         </p>
                     </div>
-                </div>
 
-                {/* Error Message */}
-                {editError && (
-                    <div className="mb-3 p-2 bg-red-500/10 border border-red-500/20 text-red-400 text-[10px] rounded-lg flex items-center gap-2">
-                        <AlertCircle size={12} className="shrink-0" />
-                        {editError}
+                    {editError && (
+                        <div className="os-chip os-chip-error" style={{ display: 'flex', alignItems: 'flex-start', gap: 6, padding: '0.5rem 0.625rem', whiteSpace: 'normal', lineHeight: 1.5 }}>
+                            <AlertCircle size={12} className="shrink-0" style={{ marginTop: 2 }} />
+                            <span>{editError}</span>
+                        </div>
+                    )}
+
+                    {/* Action footer */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6, paddingTop: '0.625rem', borderTop: '1px solid var(--border)', marginTop: 'auto' }}>
+                        {actionBtn(handleAutoEdit, isEditing ? 'Editing...' : 'Auto Edit', Wand2, isEditing, 'secondary')}
+                        {actionBtn(() => setShowSubtitleModal(true), isSubtitling ? 'Adding...' : 'Subtitles', Type, isSubtitling, 'secondary')}
+                        {actionBtn(() => setShowHookModal(true), isHooking ? 'Adding...' : 'Viral Hook', Wand2, isHooking, 'secondary')}
+                        {actionBtn(() => setShowTranslateModal(true), isTranslating ? 'Translating...' : 'Dub Voice', Languages, isTranslating, 'secondary')}
+                        {actionBtn(() => setShowModal(true), 'Post', Share2, false, 'primary')}
+                        {actionBtn(handleDownload, 'Download', Download, false, 'download')}
                     </div>
-                )}
-
-                {/* Actions Footer */}
-                <div className="grid grid-cols-2 gap-3 mt-auto pt-4 border-t border-white/5">
-                    <button
-                        onClick={handleAutoEdit}
-                        disabled={isEditing}
-                        className="col-span-1 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white rounded-lg text-xs font-bold shadow-lg shadow-purple-500/20 transition-all active:scale-[0.98] flex items-center justify-center gap-2 mb-1 truncate px-1"
-                    >
-                        {isEditing ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
-                        {isEditing ? 'Editing...' : 'Auto Edit'}
-                    </button>
-
-                    <button
-                        onClick={() => setShowSubtitleModal(true)}
-                        disabled={isSubtitling}
-                        className="col-span-1 py-2 bg-gradient-to-r from-yellow-600 to-orange-600 hover:from-yellow-500 hover:to-orange-500 text-white rounded-lg text-xs font-bold shadow-lg shadow-orange-500/20 transition-all active:scale-[0.98] flex items-center justify-center gap-2 mb-1 truncate px-1"
-                    >
-                        {isSubtitling ? <Loader2 size={14} className="animate-spin" /> : <Type size={14} />}
-                        {isSubtitling ? 'Adding...' : 'Subtitles'}
-                    </button>
-
-                    <button
-                        onClick={() => setShowHookModal(true)}
-                        disabled={isHooking}
-                        className="col-span-1 py-2 bg-gradient-to-r from-amber-400 to-yellow-500 hover:from-amber-300 hover:to-yellow-400 text-black rounded-lg text-xs font-bold shadow-lg shadow-yellow-500/20 transition-all active:scale-[0.98] flex items-center justify-center gap-2 mb-1 truncate px-1"
-                    >
-                        {isHooking ? <Loader2 size={14} className="animate-spin" /> : <Wand2 size={14} />}
-                        {isHooking ? 'Adding...' : 'Viral Hook'}
-                    </button>
-
-                    <button
-                        onClick={() => setShowTranslateModal(true)}
-                        disabled={isTranslating}
-                        className="col-span-1 py-2 bg-gradient-to-r from-green-500 to-teal-600 hover:from-green-400 hover:to-teal-500 text-white rounded-lg text-xs font-bold shadow-lg shadow-green-500/20 transition-all active:scale-[0.98] flex items-center justify-center gap-2 mb-1 truncate px-1"
-                    >
-                        {isTranslating ? <Loader2 size={14} className="animate-spin" /> : <Languages size={14} />}
-                        {isTranslating ? 'Translating...' : 'Dub Voice'}
-                    </button>
-
-                    <button
-                        onClick={() => setShowModal(true)}
-                        className="col-span-1 py-2 bg-primary hover:bg-blue-600 text-white rounded-lg text-xs font-bold shadow-lg shadow-primary/20 transition-all active:scale-[0.98] flex items-center justify-center gap-2 truncate px-2"
-                    >
-                        <Share2 size={14} className="shrink-0" /> Post
-                    </button>
-                    <button
-                        onClick={async (e) => {
-                            e.preventDefault();
-                            try {
-                                const response = await fetch(currentVideoUrl);
-                                if (!response.ok) throw new Error('Download failed');
-                                const blob = await response.blob();
-                                const url = window.URL.createObjectURL(blob);
-                                const a = document.createElement('a');
-                                a.style.display = 'none';
-                                a.href = url;
-                                a.download = `clip-${index + 1}.mp4`;
-                                document.body.appendChild(a);
-                                a.click();
-                                window.URL.revokeObjectURL(url);
-                                document.body.removeChild(a);
-                            } catch (err) {
-                                console.error('Download error:', err);
-                                window.open(currentVideoUrl, '_blank');
-                            }
-                        }}
-                        className="col-span-1 py-2 bg-white/5 hover:bg-white/10 text-zinc-300 hover:text-white rounded-lg text-xs font-medium transition-colors flex items-center justify-center gap-2 border border-white/5 truncate px-2"
-                    >
-                        <Download size={14} className="shrink-0" /> Download
-                    </button>
                 </div>
             </div>
 
             {/* Post Modal */}
-            {showModal && (
-                <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-[fadeIn_0.2s_ease-out]">
-                    <div className="bg-[#121214] border border-white/10 p-6 rounded-2xl w-full max-w-md shadow-2xl relative max-h-[90vh] overflow-y-auto custom-scrollbar">
-                        <button
-                            onClick={() => setShowModal(false)}
-                            className="absolute top-4 right-4 text-zinc-500 hover:text-white"
-                        >
-                            <X size={20} />
-                        </button>
+            <ModalShell isOpen={showModal} onClose={() => setShowModal(false)} title="Post / Schedule" maxWidth={460}>
+                {!uploadPostKey && (
+                    <div className="os-chip os-chip-warning" style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginBottom: '0.875rem', padding: '0.5rem 0.625rem', whiteSpace: 'normal', lineHeight: 1.5 }}>
+                        <AlertCircle size={13} className="shrink-0" style={{ marginTop: 1 }} />
+                        <span>Configure API Key in Settings first.</span>
+                    </div>
+                )}
 
-                        <h3 className="text-lg font-bold text-white mb-4">Post / Schedule</h3>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+                    <div>
+                        <label style={{ fontSize: '0.75rem', fontWeight: 500, color: 'var(--muted)', marginBottom: 4, display: 'block' }}>Video Title</label>
+                        <input
+                            type="text"
+                            value={postTitle}
+                            onChange={(e) => setPostTitle(e.target.value)}
+                            className="os-input"
+                            placeholder="Enter a catchy title..."
+                        />
+                    </div>
 
-                        {!uploadPostKey && (
-                            <div className="mb-4 p-3 bg-yellow-500/10 border border-yellow-500/20 text-yellow-200 text-xs rounded-lg flex items-start gap-2">
-                                <AlertCircle size={14} className="mt-0.5 shrink-0" />
-                                <div>Configure API Key in Settings first.</div>
+                    <div>
+                        <label style={{ fontSize: '0.75rem', fontWeight: 500, color: 'var(--muted)', marginBottom: 4, display: 'block' }}>Caption / Description</label>
+                        <textarea
+                            value={postDescription}
+                            onChange={(e) => setPostDescription(e.target.value)}
+                            rows={4}
+                            className="os-input os-textarea"
+                            placeholder="Write a caption for your post..."
+                        />
+                    </div>
+
+                    <div className="os-panel-2" style={{ padding: '0.75rem' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 4 }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: '0.8125rem', fontWeight: 500, color: 'var(--ink)' }}>
+                                <Calendar size={14} style={{ color: 'var(--primary)' }} /> Schedule Post
                             </div>
-                        )}
-
-                        <div className="space-y-4 mb-6">
-                            {/* Title & Description */}
-                            <div>
-                                <label className="block text-xs font-bold text-zinc-400 mb-1">Video Title</label>
-                                <input
-                                    type="text"
-                                    value={postTitle}
-                                    onChange={(e) => setPostTitle(e.target.value)}
-                                    className="w-full bg-black/40 border border-white/10 rounded-lg p-2 text-sm text-white focus:outline-none focus:border-primary/50 placeholder-zinc-600"
-                                    placeholder="Enter a catchy title..."
-                                />
-                            </div>
-
-                            <div>
-                                <label className="block text-xs font-bold text-zinc-400 mb-1">Caption / Description</label>
-                                <textarea
-                                    value={postDescription}
-                                    onChange={(e) => setPostDescription(e.target.value)}
-                                    rows={4}
-                                    className="w-full bg-black/40 border border-white/10 rounded-lg p-2 text-sm text-white focus:outline-none focus:border-primary/50 placeholder-zinc-600 resize-none"
-                                    placeholder="Write a caption for your post..."
-                                />
-                            </div>
-
-                            {/* Scheduling */}
-                            <div className="p-3 bg-white/5 rounded-lg border border-white/5">
-                                <div className="flex items-center justify-between mb-2">
-                                    <div className="flex items-center gap-2 text-sm text-white font-medium">
-                                        <Calendar size={16} className="text-purple-400" /> Schedule Post
-                                    </div>
-                                    <label className="relative inline-flex items-center cursor-pointer">
-                                        <input type="checkbox" checked={isScheduling} onChange={(e) => setIsScheduling(e.target.checked)} className="sr-only peer" />
-                                        <div className="w-9 h-5 bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-purple-600"></div>
-                                    </label>
-                                </div>
-
-                                {isScheduling && (
-                                    <div className="mt-3 animate-[fadeIn_0.2s_ease-out]">
-                                        <label className="block text-xs text-zinc-400 mb-1">Select Date & Time</label>
-                                        <div className="relative">
-                                            <input
-                                                type="datetime-local"
-                                                value={scheduleDate}
-                                                onChange={(e) => setScheduleDate(e.target.value)}
-                                                className="w-full bg-black/40 border border-white/10 rounded-lg p-2 pl-9 text-sm text-white focus:outline-none focus:border-purple-500/50 [color-scheme:dark]"
-                                            />
-                                            <Clock size={14} className="absolute left-3 top-2.5 text-zinc-500" />
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-
-                            {/* Platforms */}
-                            <div>
-                                <label className="block text-xs font-bold text-zinc-400 mb-2">Select Platforms</label>
-                                <div className="grid grid-cols-1 gap-2">
-                                    <label className="flex items-center gap-3 p-3 bg-white/5 rounded-lg cursor-pointer hover:bg-white/10 transition-colors border border-white/5">
-                                        <input type="checkbox" checked={platforms.tiktok} onChange={e => setPlatforms({ ...platforms, tiktok: e.target.checked })} className="w-4 h-4 rounded border-zinc-600 bg-black/50 text-primary focus:ring-primary" />
-                                        <div className="flex items-center gap-2 text-sm text-white"><Video size={16} className="text-cyan-400" /> TikTok</div>
-                                    </label>
-                                    <label className="flex items-center gap-3 p-3 bg-white/5 rounded-lg cursor-pointer hover:bg-white/10 transition-colors border border-white/5">
-                                        <input type="checkbox" checked={platforms.instagram} onChange={e => setPlatforms({ ...platforms, instagram: e.target.checked })} className="w-4 h-4 rounded border-zinc-600 bg-black/50 text-primary focus:ring-primary" />
-                                        <div className="flex items-center gap-2 text-sm text-white"><Instagram size={16} className="text-pink-400" /> Instagram</div>
-                                    </label>
-                                    <label className="flex items-center gap-3 p-3 bg-white/5 rounded-lg cursor-pointer hover:bg-white/10 transition-colors border border-white/5">
-                                        <input type="checkbox" checked={platforms.youtube} onChange={e => setPlatforms({ ...platforms, youtube: e.target.checked })} className="w-4 h-4 rounded border-zinc-600 bg-black/50 text-primary focus:ring-primary" />
-                                        <div className="flex items-center gap-2 text-sm text-white"><Youtube size={16} className="text-red-400" /> YouTube Shorts</div>
-                                    </label>
-                                </div>
-                            </div>
+                            <button
+                                type="button"
+                                className="os-toggle"
+                                role="switch"
+                                aria-checked={isScheduling}
+                                onClick={() => setIsScheduling(!isScheduling)}
+                            />
                         </div>
 
-                        {postResult && (
-                            <div className={`mb-4 p-3 rounded-lg text-xs flex items-start gap-2 ${postResult.success ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400'}`}>
-                                {postResult.success ? <CheckCircle size={14} className="mt-0.5 shrink-0" /> : <AlertCircle size={14} className="mt-0.5 shrink-0" />}
-                                <div>{postResult.msg}</div>
+                        {isScheduling && (
+                            <div className="os-fade-in" style={{ marginTop: 6 }}>
+                                <label style={{ fontSize: '0.75rem', color: 'var(--muted)', marginBottom: 4, display: 'block' }}>Select Date &amp; Time</label>
+                                <input
+                                    type="datetime-local"
+                                    value={scheduleDate}
+                                    onChange={(e) => setScheduleDate(e.target.value)}
+                                    className="os-input"
+                                    style={{ colorScheme: 'dark' }}
+                                />
                             </div>
                         )}
+                    </div>
 
-                        <button
-                            onClick={handlePost}
-                            disabled={posting || !uploadPostKey}
-                            className="w-full py-3 bg-primary hover:bg-primary/90 disabled:opacity-50 disabled:cursor-not-allowed rounded-xl text-white font-bold transition-all flex items-center justify-center gap-2"
-                        >
-                            {posting ? <><Loader2 size={16} className="animate-spin" /> {isScheduling ? 'Scheduling...' : 'Publishing...'}</> : <><Share2 size={16} /> {isScheduling ? 'Schedule Post' : 'Publish Now'}</>}
-                        </button>
+                    <div>
+                        <label style={{ fontSize: '0.75rem', fontWeight: 500, color: 'var(--muted)', marginBottom: 6, display: 'block' }}>Select Platforms</label>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                            {[
+                                { key: 'tiktok', label: 'TikTok', icon: TikTokMark, color: 'var(--accent)' },
+                                { key: 'instagram', label: 'Instagram', icon: Instagram, color: 'var(--accent)' },
+                                { key: 'youtube', label: 'YouTube Shorts', icon: Youtube, color: 'var(--error)' },
+                            ].map(({ key, label, icon: Icon, color }) => (
+                                <label key={key} className="os-panel-2" style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '0.625rem 0.75rem', cursor: 'pointer' }}>
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: '0.8125rem', color: 'var(--ink)' }}>
+                                        <Icon size={15} style={{ color }} /> {label}
+                                    </div>
+                                    <input
+                                        type="checkbox"
+                                        checked={platforms[key]}
+                                        onChange={(e) => setPlatforms({ ...platforms, [key]: e.target.checked })}
+                                        className="os-checkbox"
+                                        style={{ marginLeft: 'auto' }}
+                                        aria-label={label}
+                                    />
+                                </label>
+                            ))}
+                        </div>
                     </div>
                 </div>
-            )}
+
+                {postResult && (
+                    <div className={`os-chip ${postResult.success ? 'os-chip-success' : 'os-chip-error'}`} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginTop: '0.75rem', padding: '0.5rem 0.625rem', whiteSpace: 'normal', lineHeight: 1.5 }}>
+                        {postResult.success ? <CheckCircle size={13} className="shrink-0" style={{ marginTop: 1 }} /> : <AlertCircle size={13} className="shrink-0" style={{ marginTop: 1 }} />}
+                        <span>{postResult.msg}</span>
+                    </div>
+                )}
+
+                <button
+                    onClick={handlePost}
+                    disabled={posting || !uploadPostKey}
+                    className="os-btn os-btn-primary"
+                    style={{ width: '100%', marginTop: '0.875rem', justifyContent: 'center' }}
+                >
+                    {posting ? <><Loader2 size={14} className="animate-spin" /> {isScheduling ? 'Scheduling...' : 'Publishing...'}</> : <><Share2 size={14} /> {isScheduling ? 'Schedule Post' : 'Publish Now'}</>}
+                </button>
+            </ModalShell>
 
             <SubtitleModal
                 isOpen={showSubtitleModal}
@@ -679,7 +605,6 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
                 videoUrl={currentVideoUrl}
                 hasApiKey={!!elevenLabsKey}
             />
-
         </div>
     );
 }

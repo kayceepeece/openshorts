@@ -1,3 +1,6 @@
+# OpenShorts Prompt v1.0.0 — 2026-06-29
+# File: clips_sports.txt
+
 ## SPORTS CLIP SELECTION CRITERIA (Layered on top of Universal Rules)
 
 In sports videos, clip selection should prioritize the peak physical and emotional highlights of the game/match.

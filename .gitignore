@@ -29,6 +29,10 @@ data/
 .env
 youtube_cookies.txt
 
+# Client data / sensitive material
+boxable/
+.commandcode/
+
 # Generated metadata
 *_metadata.json
 

@@ -341,6 +341,7 @@ class VideoEditor:
             '-i', input_path,
             '-vf', filter_string,
             '-c:v', 'libx264', '-preset', 'fast', '-crf', '22',
+            '-pix_fmt', 'yuv420p',
             '-c:a', 'copy',
             output_path
         ]

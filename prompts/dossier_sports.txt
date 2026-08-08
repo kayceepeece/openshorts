@@ -1,10 +1,89 @@
+# OpenShorts Prompt v1.0.0 — 2026-06-29
+# File: dossier_sports.txt
+
 ## Overview
-## Timeline (with [MM:SS–MM:SS] format)
+- One-sentence summary of the event.
+- Sport / competition / broadcast type.
+- Main subject or headline storyline.
+- Source quality notes (camera angles, replays, commentary clarity, crowd audio, graphics, any issues).
+
+## Timeline
+Break the video into logical [MM:SS–MM:SS] segments. For each segment, include:
+- What is shown visually (action, camera, crowd, bench, scoreboard, field of play).
+- What is said by commentators, coaches, or athletes.
+- Who appears.
+- What changes (score, momentum, strategy, energy, possession, position).
+- Clip potential (low / medium / high) and one-sentence reason.
+
 ## Lineup & Announcements
-## Key Plays, Dunks, and Attempts (timestamped list of shots, plays, and highlights with player names)
+List lineups, starting groups, substitutions, matchups, and any announcements with:
+- Timestamp.
+- Speaker / source (commentator, announcer, graphic, referee).
+- Exact meaning.
+- Impact on the event.
+
+## Key Plays and Attempts
+For every significant play, score, save, attempt, or exchange:
+
+| Timestamp | Player / Athlete | Setup | Play Type | Result | Reaction | Clip-Worthy |
+|---|---|---|---|---|---|---|
+| 00:00 | name | setup description | [sport-appropriate: goal, score, save, tackle, dunk, shot, home run, knockout, ace, point, etc.] | success / miss / block / save / turnover / foul / penalty / etc. | crowd / bench / player / coach reaction | yes / no / maybe + reason |
+
+Also note:
+- Pressure, assist, pass, or setup leading to the play.
+- Slow-motion or replay availability.
+- Whether the moment changed momentum or the score.
+- Any rule infraction, penalty, or review.
+
 ## Score Changes & Momentum Shifts
-## Participants / Players & Coaches
+For each score change, point exchange, or momentum shift:
+- Timestamp.
+- What happened.
+- New score, state, or match situation.
+- Which team / athlete gained or lost momentum.
+- Crowd, bench, or coach reaction.
+
+## Participants / Athletes & Coaches
+### Confirmed names
+For each: name, team / role / position, jersey / number / uniform if visible, and how identified.
+
+### Inferred / unknown people
+For each: physical description, uniform / clothing, position, role, and distinguishing features. Mark as inferred.
+
 ## Quotes & Commentary Highlights
-## Best Clips (ranked highlighting peak athletic action and reactions)
+Include short verbatim quotes only when clearly audible and important. Include speaker / commentator and timestamp.
+
+## Best Clips
+Rank the top moments for short-form clipping. For each:
+- Timestamp range.
+- Why it works as a clip (athletic peak, emotional reaction, narrative turn, tactical insight).
+- Suggested hook (first 2–3 seconds).
+- Suggested payoff / ending.
+- Standalone context score (1–3): does it make sense without the full broadcast?
+
+### How To Clip Compliance (evaluate EVERY candidate)
+Each ranked clip must pass the three How To Clip rules. Record the result for every candidate.
+  A) HOOK CHECK — the first 2–3 seconds must open with EITHER a bold statement OR a bold question.
+     REJECT or re-cut anything opening with small talk, filler, pleasantries, or mid-thought context.
+     If the strongest content has a weak open, use hook transplanting: pull a bold line made later in
+     the broadcast to the front (even if repeated). The hook matters more than preserving the original order.
+  B) POINT CHECK — the play / outcome / insight must arrive by the 10-second mark.
+     Cut dead time, "um"/"uh", repetition, rambling, and thinking aloud ("let me think about how to say this").
+     Compress so the point is clear within 10 seconds even if the clip itself runs longer.
+  C) COMPLETE THOUGHT — the clip must end on a finished, rounded-out thought (satisfied, not cut off).
+     REJECT clips that stop mid-action or end with an unresolved "what happened next…" with no resolution.
+Reject any clip failing B or C. For a failed hook (A) with otherwise strong content, re-cut the start
+(hook transplanting) instead of dropping the clip. Label each ranked clip with its compliance status,
+e.g. "A✓ B✓ C✓ D3" or "A✗→transplant B✓ C✓ D2".
+
 ## Ambiguities
-## Editor Notes (athletic highlights, crowd/bench reactions, short-form potential)
+List anything unclear, partially hidden, cut off, or not confidently identifiable (names, scores, calls, fouls, penalties, rulings).
+
+## Editor Notes
+- Strongest hook in the video.
+- Best cold-open start point.
+- Likely short-form clips.
+- Likely long-form recap segments.
+- Crowd / bench / coach reactions worth using.
+- Any replay or slow-motion moments that strengthen a clip.
+- Sport-specific editing notes (e.g., when to cut around dead time, when to include pre-play setup).

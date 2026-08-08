@@ -1,0 +1,89 @@
+# OpenShorts Prompt v1.0.0 — 2026-06-29
+# File: dossier_drama.txt
+
+## Overview
+- One-sentence summary of the scene or sequence.
+- Genre (drama, action, comedy, thriller, romance, horror, etc.).
+- Main plot or scene context.
+- Source quality notes (lighting, camera work, sound design, music, visual effects, any technical issues).
+
+## Scenes / Timeline
+Break the video into logical [MM:SS–MM:SS] scenes or segments. For each segment, include:
+- What happens visually (action, camera movement, setting, props).
+- Key dialogue or narration.
+- Characters present.
+- Emotional shift or change in the scene (tension, release, surprise, realization).
+- Clip potential (low / medium / high) and one-sentence reason.
+
+## Characters
+### Main characters
+For each: name, role in the scene (protagonist, antagonist, ally, observer), motivation, and emotional state.
+
+### Supporting characters
+For each: name if known, role, and how they advance the scene.
+
+### Inferred / unnamed characters
+For each: physical description, clothing, role, and distinguishing features. Mark as inferred.
+
+## Plot Beats & Reveals
+For each major plot beat, twist, reveal, or turning point:
+- Timestamp.
+- What happens.
+- Why it matters to the story.
+- Characters involved.
+- Spoiler severity (minor / major / ending-altering).
+- Certainty: confirmed or inferred.
+
+## Emotional Beats
+For each strong emotional moment (tension, fear, joy, sadness, anger, shock, relief, betrayal, triumph):
+- Timestamp.
+- What triggers the emotion.
+- Who feels it.
+- How it is shown (dialogue, facial expression, action, music).
+- Clip-worthy? (yes / no / maybe) and reason.
+
+## Visual & Cinematic Moments
+For each notable visual choice, shot, or cinematic moment:
+- Timestamp.
+- What is shown (close-up, wide shot, action sequence, visual gag, special effect).
+- What it communicates.
+- Clip-worthy? (yes / no / maybe) and reason.
+
+## Quotes
+Include short verbatim dialogue only when clearly audible and important. Include character and timestamp.
+
+## Best Clips
+Rank the top moments for short-form clipping. For each:
+- Timestamp range.
+- Why it works as a clip (emotional beat, sharp dialogue, visual moment, reveal).
+- Suggested hook (first 2–3 seconds).
+- Suggested payoff / ending.
+- Standalone context score (1–3): does it make sense without the full movie?
+- Spoiler risk (none / minor / major).
+
+### How To Clip Compliance (evaluate EVERY candidate)
+Each ranked clip must pass the three How To Clip rules. Record the result for every candidate.
+  A) HOOK CHECK — the first 2–3 seconds must open with EITHER a bold statement OR a bold question.
+     REJECT or re-cut anything opening with small talk, filler, pleasantries, or mid-thought context.
+     If the strongest content has a weak open, use hook transplanting: pull a bold line made later in
+     the video to the front (even repeated). The hook matters more than preserving the original order.
+  B) POINT CHECK — the core value / reveal / payoff must arrive by the 10-second mark.
+     Cut dead space, "um"/"uh", repetition, rambling, and thinking aloud ("let me think about how to say this").
+     Compress so the point is clear within 10 seconds even if the clip itself runs longer.
+  C) COMPLETE THOUGHT — the clip must end on a finished, rounded-out thought (satisfied, not cut off).
+     REJECT clips that stop mid-point or end on an unresolved "but here's the thing…" with no resolution.
+Reject any clip failing B or C. For a failed hook (A) with otherwise strong content, re-cut the start
+(hook transplanting) instead of dropping the clip. Label each ranked clip with its compliance status,
+e.g. "A✓ B✓ C✓ D3" or "A✗→transplant B✓ C✓ D2".
+
+## Ambiguities
+List anything unclear, partially hidden, cut off, or not confidently identifiable (character names, plot details, dialogue, visual details).
+
+## Editor Notes
+- Strongest hook in the video.
+- Best cold-open start point.
+- Likely short-form clips.
+- Likely long-form recap segments.
+- Scenes or shots to avoid (spoilers, dead time, transitions, credits).
+- Where jump cuts would help or hurt.
+- Music or sound cues worth preserving.

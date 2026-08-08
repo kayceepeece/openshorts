@@ -1,3 +1,6 @@
+# OpenShorts Prompt v1.0.0 — 2026-06-29
+# File: clips_lecture.txt
+
 ## LECTURE/EDUCATIONAL CLIP SELECTION CRITERIA (Layered on top of Universal Rules)
 
 In lectures, presentations, and educational content, clips should isolate clear explanations, "aha!" moments, and surprising facts.

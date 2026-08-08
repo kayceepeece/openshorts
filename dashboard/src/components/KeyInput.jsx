@@ -18,16 +18,20 @@ export default function KeyInput({ onKeySet, savedKey }) {
     };
 
     return (
-        <div className="bg-surface border border-white/5 rounded-2xl p-6 mb-8 animate-[fadeIn_0.5s_ease-out]">
-            <div className="flex items-center gap-3 mb-4">
-                <div className="p-2 bg-accent/20 rounded-lg text-accent">
-                    <Key size={20} />
+        <div className="os-panel" style={{ padding: '1.25rem', marginBottom: '2rem' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: '0.875rem' }}>
+                <div style={{
+                    width: 32, height: 32, borderRadius: 6, flexShrink: 0,
+                    background: 'oklch(0.55 0.095 170 / 0.12)', border: '1px solid oklch(0.55 0.095 170 / 0.25)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>
+                    <Key size={15} style={{ color: 'var(--primary)' }} />
                 </div>
-                <h2 className="text-lg font-semibold">Gemini API Key</h2>
+                <h2 style={{ fontSize: '0.9375rem', fontWeight: 600, color: 'var(--ink)', margin: 0 }}>Gemini API Key</h2>
             </div>
 
-            <div className="flex gap-3">
-                <div className="relative flex-1">
+            <div style={{ display: 'flex', gap: 8 }}>
+                <div style={{ position: 'relative', flex: 1 }}>
                     <input
                         type={isVisible ? "text" : "password"}
                         value={key}
@@ -36,34 +40,36 @@ export default function KeyInput({ onKeySet, savedKey }) {
                             setIsSaved(false);
                         }}
                         placeholder="AIzaSy..."
-                        className="input-field pr-12 font-mono"
+                        className="os-input"
+                        style={{ fontFamily: 'var(--font-mono)', paddingRight: '2.5rem' }}
+                        aria-label="Gemini API key"
                     />
                     <button
                         onClick={() => setIsVisible(!isVisible)}
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-white transition-colors"
+                        className="os-btn os-btn-ghost os-btn-xs"
+                        style={{ position: 'absolute', right: 4, top: 4, padding: 5 }}
+                        aria-label={isVisible ? 'Hide key' : 'Show key'}
                     >
-                        {isVisible ? <EyeOff size={18} /> : <Eye size={18} />}
+                        {isVisible ? <EyeOff size={15} /> : <Eye size={15} />}
                     </button>
                 </div>
                 <button
                     onClick={handleSave}
                     disabled={!key || isSaved}
-                    className={`px-6 rounded-xl font-medium transition-all flex items-center gap-2 ${isSaved
-                        ? 'bg-green-500/20 text-green-400 cursor-default'
-                        : 'bg-primary hover:bg-blue-600 text-white shadow-lg shadow-primary/20'
-                        }`}
+                    className={`os-btn os-btn-sm ${isSaved ? 'os-chip-success os-btn-ghost' : 'os-btn-primary'}`}
+                    style={{ flexShrink: 0, gap: 5 }}
                 >
-                    {isSaved ? <><Check size={18} /> Ready</> : 'Set Key'}
+                    {isSaved ? <><Check size={13} /> Ready</> : 'Set Key'}
                 </button>
             </div>
-            <p className="mt-3 text-xs text-zinc-500">
+            <p style={{ margin: '0.75rem 0 0', fontSize: '0.75rem', color: 'var(--subtle)', lineHeight: 1.5 }}>
                 Your key is stored locally in your browser for convenience.
                 <br />
                 <a
                     href="https://aistudio.google.com/app/apikey"
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="text-primary hover:underline mt-1 inline-block"
+                    style={{ color: 'var(--primary)', marginTop: 4, textDecoration: 'none', display: 'inline-block' }}
                 >
                     Get your free Gemini API Key here →
                 </a>

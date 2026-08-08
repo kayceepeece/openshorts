@@ -1,0 +1,44 @@
+# OpenShorts Prompt v1.0.0 — 2026-06-29
+# File: clips_comedy.txt
+
+## COMEDY CLIP SELECTION CRITERIA (Layered on top of Universal Rules)
+
+In comedy and humor content — standup, sketches, sitcoms, roasts, comedic podcasts and monologues — clips should capture sharp punchlines, crowd reactions, visual gags, and delivery that works BOTH for a cold viewer and for core-fans.
+
+### 1. HOOK SIGNAL (First 2–3s)
+- **Bold, opinionated line as a cold-open**: the most quotable, high-confident, or self-aware line in the bit clips surprisingly well.
+- **Punchline front-loading**: When a strong punchline lands within the first few seconds, it acts as the hook.
+- **Crowd / laugh hook**: An audible audience laugh or the start of a huge reaction can grab the viewer if the line that triggered it is shown immediately after.
+
+Avoid opening a comedy clip with:
+- The setup of a 30-second inside joke with no cold-viewer payoff.
+- Crowd noise / applause without the line it belongs to.
+- Small talk or "so I'm here today…" from the stage.
+
+### 2. PAYOFF SIGNAL (The Climax & Resolution)
+- **The punchline landing** — the exact beat where the joke fires, whether verbal, deadpan, yelled, or physical.
+- **The audience reaction** — laughter building, gasping, audibly losing it; this confirms the payoff.
+- **The character beat / callback payoff** — where a running gag or callback finally pays off.
+- **The reaction shot** — the comic's face, a host breaking, or a crowd reaction that completes the bit.
+
+### 3. PACING & SEGMENT BOUNDARIES
+- Comedy needs just enough setup for the punchline to land; cut dead air, filler, and crowd noise around the setup.
+- If the setup is present but the punch/reaction is mixed, keep the setup minimal and make the punchline the star.
+- Let the laugh fully arrive, then cut — but avoid letting audience applause run on for several seconds unless it adds comedy.
+- For completely visual gags, the clip must work without audio; end the punchline beat cleanly.
+
+### 4. STANDALONE CONTEXT (Comedy-specific)
+- A joke that depends entirely on a long-running story needs context flags: if the punchline requires prior setup inside the video, keep enough of the setup so a cold viewer still gets the joke, OR swap to a clip whose punchline works cold.
+- Callbacks and running gags may be clip-worthy WITH their first-appearance setup included as the cold-open; otherwise the punchline alone may confuse a new viewer.
+- Roast / insult bits should include a beat of who the target is, so the viewer not the fan gets the layer.
+
+### 5. LAUGH METRICS
+- Prefer bits with loud, clear audience or panel laughter — linear laughter = proven punch.
+- Mark bits with NO audio reaction as "silent / visual" and judge them on visual and timing alone.
+- Note any deadly dead air between a joke idea and its punchline; this means the cut should start LATER.
+
+## IMPORTANT: REJECT
+- Jokes that are low-commit, obvious, or non-self-contained (need a prior 10-minute setup).
+- Pace too slow: if the source has a 20-second setup before the first laugh.
+- Insults that gratuitously punch DOWN, or content policy with target deadnaming, hate, or other clearly harmful material.
+- Any clip that fails to deliver its punchline within its runtime (a joke without its landing).

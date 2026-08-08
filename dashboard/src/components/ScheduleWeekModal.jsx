@@ -1,6 +1,7 @@
 import React, { useState, useMemo } from 'react';
-import { X, Loader2, Calendar, Clock, CheckCircle, AlertCircle, Video, Instagram, Youtube, ChevronLeft, ChevronRight, Globe, ExternalLink } from 'lucide-react';
+import { Loader2, Calendar, Clock, CheckCircle, AlertCircle, Video, Instagram, Youtube, ChevronLeft, ChevronRight, Globe, ExternalLink } from 'lucide-react';
 import { getApiUrl } from '../config';
+import ModalShell from './ModalShell';
 
 const DAYS = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
 const MONTHS = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
@@ -64,14 +65,15 @@ function detectTimezone() {
     }
 }
 
+const FIELD_LABEL = {
+    fontSize: '0.75rem', fontWeight: 500, color: 'var(--muted)',
+    display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6,
+};
+
 export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId, uploadPostKey, uploadUserId }) {
     const [time, setTime] = useState('12:00');
     const [timezone, setTimezone] = useState(detectTimezone);
-    const [platforms, setPlatforms] = useState({
-        tiktok: true,
-        instagram: true,
-        youtube: true
-    });
+    const [platforms, setPlatforms] = useState({ tiktok: true, instagram: true, youtube: true });
     const [startOffset, setStartOffset] = useState(1);
 
     const schedule = useMemo(() => {
@@ -88,7 +90,6 @@ export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId, uploa
     const [progress, setProgress] = useState({ current: 0, total: 0, results: [] });
     const [done, setDone] = useState(false);
 
-    // Reset state when modal reopens
     const prevOpen = React.useRef(false);
     React.useEffect(() => {
         if (isOpen && !prevOpen.current) {
@@ -116,8 +117,6 @@ export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId, uploa
         for (let i = 0; i < schedule.length; i++) {
             const { clip, index, date } = schedule[i];
 
-            // Build local datetime string: "2026-04-06T12:00:00"
-            // Upload-Post accepts this + timezone IANA parameter
             const pad = (n) => String(n).padStart(2, '0');
             const scheduledDate = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${time}:00`;
 
@@ -160,229 +159,209 @@ export default function ScheduleWeekModal({ isOpen, onClose, clips, jobId, uploa
     const successCount = progress.results.filter(r => r.success).length;
     const failCount = progress.results.filter(r => !r.success).length;
 
+    const platformBtn = ({ key, label, icon: Icon, active, onToggle }) => (
+        <button
+            key={key}
+            type="button"
+            onClick={onToggle}
+            disabled={scheduling}
+            aria-pressed={active}
+            className="os-btn os-btn-sm"
+            style={{
+                flex: 1, justifyContent: 'center', gap: 6,
+                background: active ? 'oklch(0.55 0.095 170 / 0.1)' : 'transparent',
+                borderColor: active ? 'oklch(0.55 0.095 170 / 0.4)' : 'var(--border)',
+                color: active ? 'var(--primary)' : 'var(--muted)',
+            }}
+        >
+            <Icon size={13} /> {label}
+        </button>
+    );
+
     return (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-[fadeIn_0.2s_ease-out]">
-            <div className="bg-[#121214] border border-white/10 p-6 rounded-2xl w-full max-w-lg shadow-2xl relative max-h-[90vh] overflow-y-auto custom-scrollbar">
+        <ModalShell
+            isOpen={isOpen}
+            onClose={onClose}
+            title="Programar Semana"
+            subtitle={`${clips?.length || 0} clips · 1 por día`}
+            icon={<Calendar size={14} style={{ color: 'var(--primary)', flexShrink: 0 }} />}
+            maxWidth={480}
+        >
+            {!uploadPostKey && (
+                <div className="os-chip os-chip-warning" style={{ display: 'flex', alignItems: 'flex-start', gap: 6, marginBottom: '0.875rem', padding: '0.5rem 0.625rem', whiteSpace: 'normal', lineHeight: 1.5 }}>
+                    <AlertCircle size={13} className="shrink-0" style={{ marginTop: 1 }} />
+                    <span>Configura tu API Key de Upload-Post en Settings primero.</span>
+                </div>
+            )}
+
+            {/* Time + Timezone */}
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10, marginBottom: '0.875rem' }}>
+                <div>
+                    <label style={FIELD_LABEL}><Clock size={13} /> Hora</label>
+                    <input
+                        type="time"
+                        value={time}
+                        onChange={(e) => setTime(e.target.value)}
+                        disabled={scheduling}
+                        className="os-input"
+                        style={{ colorScheme: 'dark' }}
+                    />
+                </div>
+                <div>
+                    <label style={FIELD_LABEL}><Globe size={13} /> Zona horaria</label>
+                    <select
+                        value={timezone}
+                        onChange={(e) => setTimezone(e.target.value)}
+                        disabled={scheduling}
+                        className="os-input os-select"
+                    >
+                        {TIMEZONES.map(tz => (
+                            <option key={tz.value} value={tz.value}>{tz.label}</option>
+                        ))}
+                    </select>
+                </div>
+            </div>
+
+            {/* Start day offset */}
+            <div className="os-panel-2" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.5rem 0.75rem', marginBottom: '0.875rem' }}>
+                <span style={{ fontSize: '0.75rem', fontWeight: 500, color: 'var(--muted)' }}>Empezar desde</span>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <button
+                        onClick={() => setStartOffset(Math.max(1, startOffset - 1))}
+                        disabled={startOffset <= 1 || scheduling}
+                        className="os-btn os-btn-ghost os-btn-xs"
+                        style={{ padding: 5 }}
+                        aria-label="Previous day"
+                    >
+                        <ChevronLeft size={15} />
+                    </button>
+                    <span style={{ fontSize: '0.8125rem', fontWeight: 500, color: 'var(--ink)', minWidth: 90, textAlign: 'center' }}>
+                        {(() => {
+                            const d = new Date();
+                            d.setDate(d.getDate() + startOffset);
+                            return `${getDayLabel(d)} ${formatDate(d)}`;
+                        })()}
+                    </span>
+                    <button
+                        onClick={() => setStartOffset(startOffset + 1)}
+                        disabled={scheduling}
+                        className="os-btn os-btn-ghost os-btn-xs"
+                        style={{ padding: 5 }}
+                        aria-label="Next day"
+                    >
+                        <ChevronRight size={15} />
+                    </button>
+                </div>
+            </div>
+
+            {/* Calendar grid */}
+            <div className="os-scroll" style={{ display: 'flex', flexDirection: 'column', gap: 6, maxHeight: 240, overflowY: 'auto', marginBottom: '0.875rem', paddingRight: 2 }}>
+                {schedule.map(({ clip, index, date }) => (
+                    <div key={index} className="os-panel-2" style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '0.625rem 0.75rem', background: 'var(--surface)' }}>
+                        <div style={{ width: 52, flexShrink: 0, textAlign: 'center' }}>
+                            <div style={{ fontSize: '0.625rem', fontWeight: 700, color: 'var(--primary)', textTransform: 'uppercase' }}>{getDayLabel(date)}</div>
+                            <div style={{ fontSize: '1.125rem', fontWeight: 700, color: 'var(--ink)', lineHeight: 1.2 }}>{date.getDate()}</div>
+                            <div style={{ fontSize: '0.625rem', color: 'var(--subtle)' }}>{MONTHS[date.getMonth()]}</div>
+                        </div>
+
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--ink)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                Clip {index + 1}
+                            </div>
+                            <div style={{ fontSize: '0.6875rem', color: 'var(--subtle)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {clip.title || clip.video_title_for_youtube_short || 'Viral Short'}
+                            </div>
+                            <div style={{ fontSize: '0.6875rem', color: 'var(--subtle)', marginTop: 2 }}>
+                                {time}h · {TIMEZONES.find(t => t.value === timezone)?.label || timezone}
+                            </div>
+                        </div>
+
+                        <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', width: 20 }}>
+                            {progress.results[index]?.success === true && <CheckCircle size={17} style={{ color: 'var(--success)' }} />}
+                            {progress.results[index]?.success === false && <AlertCircle size={17} style={{ color: 'var(--error)' }} />}
+                            {scheduling && progress.current - 1 === index && <Loader2 size={17} className="animate-spin" style={{ color: 'var(--primary)' }} />}
+                            {!scheduling && progress.results[index] === undefined && <div style={{ width: 14, height: 14, borderRadius: '50%', border: '2px solid var(--border)' }} />}
+                        </div>
+                    </div>
+                ))}
+            </div>
+
+            {/* Platforms */}
+            <div style={{ marginBottom: '0.875rem' }}>
+                <label style={FIELD_LABEL}>Plataformas</label>
+                <div style={{ display: 'flex', gap: 6 }}>
+                    {platformBtn({ key: 'tiktok', label: 'TikTok', icon: Video, active: platforms.tiktok, onToggle: () => setPlatforms(p => ({ ...p, tiktok: !p.tiktok })) })}
+                    {platformBtn({ key: 'instagram', label: 'Instagram', icon: Instagram, active: platforms.instagram, onToggle: () => setPlatforms(p => ({ ...p, instagram: !p.instagram })) })}
+                    {platformBtn({ key: 'youtube', label: 'YouTube', icon: Youtube, active: platforms.youtube, onToggle: () => setPlatforms(p => ({ ...p, youtube: !p.youtube })) })}
+                </div>
+            </div>
+
+            {/* Progress bar */}
+            {(scheduling || done) && (
+                <div style={{ marginBottom: '0.875rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', fontSize: '0.75rem', color: 'var(--muted)', marginBottom: 6 }}>
+                        <span>{scheduling ? 'Programando...' : 'Completado'}</span>
+                        <span>{progress.current}/{progress.total}</span>
+                    </div>
+                    <div className="os-progress" style={{ height: 6 }}>
+                        <div
+                            className="os-progress-bar"
+                            style={{
+                                width: `${(progress.current / progress.total) * 100}%`,
+                                background: done && failCount > 0 ? 'var(--warning)' : done && failCount === 0 ? 'var(--success)' : 'var(--primary)',
+                            }}
+                        />
+                    </div>
+                    {done && (
+                        <div style={{ marginTop: 8, fontSize: '0.75rem', textAlign: 'center', color: failCount === 0 ? 'var(--success)' : 'var(--warning)', fontWeight: 500 }}>
+                            {failCount === 0 ? 'Todos los clips programados correctamente' : `${successCount} programados, ${failCount} fallidos`}
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* Actions */}
+            <div style={{ display: 'flex', gap: 8 }}>
                 <button
                     onClick={onClose}
                     disabled={scheduling}
-                    className="absolute top-4 right-4 text-zinc-500 hover:text-white disabled:opacity-50"
+                    className="os-btn os-btn-secondary"
+                    style={{ flex: 1 }}
                 >
-                    <X size={20} />
+                    {done ? 'Cerrar' : 'Cancelar'}
                 </button>
-
-                {/* Header */}
-                <div className="flex items-center gap-3 mb-6">
-                    <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-purple-500 to-indigo-600 flex items-center justify-center">
-                        <Calendar size={20} className="text-white" />
-                    </div>
-                    <div>
-                        <h3 className="text-lg font-bold text-white">Programar Semana</h3>
-                        <p className="text-xs text-zinc-500">{clips?.length || 0} clips &middot; 1 por día</p>
-                    </div>
-                </div>
-
-                {!uploadPostKey && (
-                    <div className="mb-4 p-3 bg-yellow-500/10 border border-yellow-500/20 text-yellow-200 text-xs rounded-lg flex items-start gap-2">
-                        <AlertCircle size={14} className="mt-0.5 shrink-0" />
-                        <div>Configura tu API Key de Upload-Post en Settings primero.</div>
-                    </div>
-                )}
-
-                {/* Time + Timezone */}
-                <div className="mb-5 grid grid-cols-2 gap-3">
-                    <div>
-                        <label className="block text-xs font-bold text-zinc-400 mb-2 flex items-center gap-2">
-                            <Clock size={14} className="text-purple-400" />
-                            Hora
-                        </label>
-                        <input
-                            type="time"
-                            value={time}
-                            onChange={(e) => setTime(e.target.value)}
-                            disabled={scheduling}
-                            className="w-full bg-black/40 border border-white/10 rounded-lg p-3 text-sm text-white focus:outline-none focus:border-purple-500/50 [color-scheme:dark]"
-                        />
-                    </div>
-                    <div>
-                        <label className="block text-xs font-bold text-zinc-400 mb-2 flex items-center gap-2">
-                            <Globe size={14} className="text-indigo-400" />
-                            Zona horaria
-                        </label>
-                        <select
-                            value={timezone}
-                            onChange={(e) => setTimezone(e.target.value)}
-                            disabled={scheduling}
-                            className="w-full bg-black/40 border border-white/10 rounded-lg p-3 text-sm text-white focus:outline-none focus:border-indigo-500/50 appearance-none cursor-pointer"
-                        >
-                            {TIMEZONES.map(tz => (
-                                <option key={tz.value} value={tz.value}>{tz.label}</option>
-                            ))}
-                        </select>
-                    </div>
-                </div>
-
-                {/* Start day offset */}
-                <div className="mb-5 flex items-center justify-between">
-                    <span className="text-xs font-bold text-zinc-400">Empezar desde</span>
-                    <div className="flex items-center gap-2">
-                        <button
-                            onClick={() => setStartOffset(Math.max(1, startOffset - 1))}
-                            disabled={startOffset <= 1 || scheduling}
-                            className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white disabled:opacity-30 transition-colors"
-                        >
-                            <ChevronLeft size={16} />
-                        </button>
-                        <span className="text-sm text-white font-medium min-w-[90px] text-center">
-                            {(() => {
-                                const d = new Date();
-                                d.setDate(d.getDate() + startOffset);
-                                return `${getDayLabel(d)} ${formatDate(d)}`;
-                            })()}
-                        </span>
-                        <button
-                            onClick={() => setStartOffset(startOffset + 1)}
-                            disabled={scheduling}
-                            className="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-zinc-400 hover:text-white disabled:opacity-30 transition-colors"
-                        >
-                            <ChevronRight size={16} />
-                        </button>
-                    </div>
-                </div>
-
-                {/* Calendar grid */}
-                <div className="mb-5 space-y-2">
-                    {schedule.map(({ clip, index, date }) => (
-                        <div key={index} className="flex items-center gap-3 p-3 bg-white/5 rounded-xl border border-white/5 hover:border-white/10 transition-colors">
-                            <div className="w-14 shrink-0 text-center">
-                                <div className="text-[10px] font-bold text-purple-400 uppercase">{getDayLabel(date)}</div>
-                                <div className="text-lg font-bold text-white leading-tight">{date.getDate()}</div>
-                                <div className="text-[10px] text-zinc-500">{MONTHS[date.getMonth()]}</div>
-                            </div>
-
-                            <div className="flex-1 min-w-0">
-                                <div className="text-xs font-bold text-white truncate">
-                                    Clip {index + 1}
-                                </div>
-                                <div className="text-[10px] text-zinc-500 truncate">
-                                    {clip.video_title_for_youtube_short || 'Viral Short'}
-                                </div>
-                                <div className="text-[10px] text-zinc-600 mt-0.5">
-                                    {time}h &middot; {TIMEZONES.find(t => t.value === timezone)?.label || timezone}
-                                </div>
-                            </div>
-
-                            <div className="shrink-0">
-                                {progress.results[index]?.success === true && (
-                                    <CheckCircle size={18} className="text-green-400" />
-                                )}
-                                {progress.results[index]?.success === false && (
-                                    <AlertCircle size={18} className="text-red-400" />
-                                )}
-                                {scheduling && progress.current === index && (
-                                    <Loader2 size={18} className="text-purple-400 animate-spin" />
-                                )}
-                                {!scheduling && progress.results[index] === undefined && (
-                                    <div className="w-4 h-4 rounded-full border-2 border-zinc-700" />
-                                )}
-                            </div>
-                        </div>
-                    ))}
-                </div>
-
-                {/* Platforms */}
-                <div className="mb-5">
-                    <label className="block text-xs font-bold text-zinc-400 mb-2">Plataformas</label>
-                    <div className="flex gap-2">
-                        <button
-                            onClick={() => setPlatforms(p => ({ ...p, tiktok: !p.tiktok }))}
-                            disabled={scheduling}
-                            className={`flex-1 flex items-center justify-center gap-2 p-2.5 rounded-lg text-xs font-bold border transition-all ${platforms.tiktok ? 'bg-cyan-500/10 border-cyan-500/30 text-cyan-400' : 'bg-white/5 border-white/5 text-zinc-500'}`}
-                        >
-                            <Video size={14} /> TikTok
-                        </button>
-                        <button
-                            onClick={() => setPlatforms(p => ({ ...p, instagram: !p.instagram }))}
-                            disabled={scheduling}
-                            className={`flex-1 flex items-center justify-center gap-2 p-2.5 rounded-lg text-xs font-bold border transition-all ${platforms.instagram ? 'bg-pink-500/10 border-pink-500/30 text-pink-400' : 'bg-white/5 border-white/5 text-zinc-500'}`}
-                        >
-                            <Instagram size={14} /> Instagram
-                        </button>
-                        <button
-                            onClick={() => setPlatforms(p => ({ ...p, youtube: !p.youtube }))}
-                            disabled={scheduling}
-                            className={`flex-1 flex items-center justify-center gap-2 p-2.5 rounded-lg text-xs font-bold border transition-all ${platforms.youtube ? 'bg-red-500/10 border-red-500/30 text-red-400' : 'bg-white/5 border-white/5 text-zinc-500'}`}
-                        >
-                            <Youtube size={14} /> YouTube
-                        </button>
-                    </div>
-                </div>
-
-                {/* Progress bar */}
-                {(scheduling || done) && (
-                    <div className="mb-5">
-                        <div className="flex items-center justify-between text-xs text-zinc-400 mb-2">
-                            <span>{scheduling ? 'Programando...' : 'Completado'}</span>
-                            <span>{progress.current}/{progress.total}</span>
-                        </div>
-                        <div className="w-full h-2 bg-white/5 rounded-full overflow-hidden">
-                            <div
-                                className={`h-full rounded-full transition-all duration-500 ${done && failCount === 0 ? 'bg-green-500' : done && failCount > 0 ? 'bg-yellow-500' : 'bg-purple-500'}`}
-                                style={{ width: `${(progress.current / progress.total) * 100}%` }}
-                            />
-                        </div>
-                        {done && (
-                            <div className="mt-3 text-xs text-center">
-                                {failCount === 0 ? (
-                                    <span className="text-green-400">Todos los clips programados correctamente</span>
-                                ) : (
-                                    <span className="text-yellow-400">{successCount} programados, {failCount} fallidos</span>
-                                )}
-                            </div>
-                        )}
-                    </div>
-                )}
-
-                {/* Actions */}
-                <div className="flex gap-3">
+                {!done ? (
                     <button
-                        onClick={onClose}
-                        disabled={scheduling}
-                        className="flex-1 py-3 bg-white/5 hover:bg-white/10 text-zinc-300 rounded-xl font-medium transition-colors disabled:opacity-50"
+                        onClick={handleScheduleAll}
+                        disabled={scheduling || !uploadPostKey || selectedPlatforms.length === 0}
+                        className="os-btn os-btn-primary"
+                        style={{ flex: 1, justifyContent: 'center', gap: 6 }}
                     >
-                        {done ? 'Cerrar' : 'Cancelar'}
+                        {scheduling ? (
+                            <>
+                                <Loader2 size={13} className="animate-spin" />
+                                Programando...
+                            </>
+                        ) : (
+                            <>
+                                <Calendar size={13} />
+                                Programar {clips?.length || 0} Clips
+                            </>
+                        )}
                     </button>
-                    {!done ? (
-                        <button
-                            onClick={handleScheduleAll}
-                            disabled={scheduling || !uploadPostKey || selectedPlatforms.length === 0}
-                            className="flex-1 py-3 bg-gradient-to-r from-purple-500 to-indigo-600 hover:from-purple-400 hover:to-indigo-500 text-white rounded-xl font-bold transition-all disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-                        >
-                            {scheduling ? (
-                                <>
-                                    <Loader2 size={16} className="animate-spin" />
-                                    Programando...
-                                </>
-                            ) : (
-                                <>
-                                    <Calendar size={16} />
-                                    Programar {clips?.length || 0} Clips
-                                </>
-                            )}
-                        </button>
-                    ) : (
-                        <a
-                            href="https://app.upload-post.com/calendar"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="flex-1 py-3 bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-400 hover:to-purple-500 text-white rounded-xl font-bold transition-all flex items-center justify-center gap-2 no-underline"
-                        >
-                            <ExternalLink size={16} />
-                            Ver Calendario
-                        </a>
-                    )}
-                </div>
+                ) : (
+                    <a
+                        href="https://app.upload-post.com/calendar"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="os-btn os-btn-secondary"
+                        style={{ flex: 1, justifyContent: 'center', gap: 6, textDecoration: 'none' }}
+                    >
+                        <ExternalLink size={13} />
+                        Ver Calendario
+                    </a>
+                )}
             </div>
-        </div>
+        </ModalShell>
     );
 }

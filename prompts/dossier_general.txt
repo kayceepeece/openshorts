@@ -1,8 +1,129 @@
+# OpenShorts Prompt v1.0.0 — 2026-06-29
+# File: dossier_general.txt
+
 ## Overview
-## Timeline (with [MM:SS–MM:SS] format)
+- One-sentence summary of the video.
+- Event type (e.g., podcast interview, sports broadcast, lecture, announcement, gameplay stream).
+- Main subject or central topic.
+- Source quality notes (audio clarity, camera work, lighting, crosstalk, editing style, any issues).
+
+## Timeline
+Break the video into logical [MM:SS–MM:SS] segments. For each segment, include:
+- What is shown visually.
+- What is said (key dialogue, not a full transcript).
+- Who appears.
+- What changes (mood, topic, action, camera, setting).
+- Clip potential (low / medium / high) and one-sentence reason.
+
 ## Key Moments / Reveals
+List every significant moment, reveal, announcement, or turning point with:
+- Timestamp.
+- What happens.
+- Why it matters.
+- Who is involved.
+- Mark certainty: confirmed, inferred, or uncertain.
+
 ## Participants / People
+### Confirmed names
+For each: name, role, and how they are identified in the video.
+
+### Inferred / unknown people
+For each: physical description, clothing, position, role, and distinguishing features. Mark as inferred.
+
 ## Quotes
-## Best Clips (ranked)
+Include short verbatim quotes only when clearly audible and important. Include speaker and timestamp.
+
+## Visual / Action Moments
+For each notable visual action, reaction, demonstration, or performance:
+- Timestamp.
+- Subject / performer.
+- Setup / context.
+- Action type.
+- Result / outcome.
+- Crowd, audience, or co-panel reaction.
+- Clip-worthy? (yes / no / maybe) and one-sentence reason.
+
+## Best Clips
+Rank the top moments for short-form clipping. For each:
+- Timestamp range.
+- Why it works as a clip.
+- Suggested hook (first 2–3 seconds).
+- Suggested payoff / ending.
+- Standalone context score (1–3): does it make sense without the full video?
+
+### How To Clip Compliance (evaluate EVERY candidate)
+Each ranked clip must pass the three How To Clip rules. Record the result for every candidate.
+  A) HOOK CHECK — the first 2–3 seconds must open with EITHER a bold statement OR a bold question.
+     REJECT or re-cut anything opening with small talk, filler, pleasantries, or mid-thought context.
+     If the strongest content has a weak open, use hook transplanting: pull a bold line made later in
+     the video to the front (even repeated). The hook matters more than preserving the original order.
+  B) POINT CHECK — the core value / reveal / payoff must arrive by the 10-second mark.
+     Cut dead space, "um"/"uh", repetition, rambling, and thinking aloud ("let me think about how to say this").
+     Compress so the point is clear within 10 seconds even if the clip itself runs longer.
+  C) COMPLETE THOUGHT — the clip must end on a finished, rounded-out thought (satisfied, not cut off).
+     REJECT clips that stop mid-point or end on an unresolved "but here's the thing…" with no resolution.
+Reject any clip failing B or C. For a failed hook (A) with otherwise strong content, re-cut the start
+(hook transplanting) instead of dropping the clip. Label each ranked clip with its compliance status,
+e.g. "A✓ B✓ C✓ D3" or "A✗→transplant B✓ C✓ D2".
+
 ## Ambiguities
-## Editor Notes (hook, cold open, short-form potential)
+List anything unclear, partially hidden, cut off, or not confidently identifiable.
+
+## Editor Notes
+- Strongest hook in the video.
+- Best cold-open start point.
+- Likely short-form clips.
+- Likely long-form recap segments.
+- Any special editing considerations (jumps, B-roll, graphics, audio issues).
+
+---
+
+## Example Dossier (for a hypothetical 2-minute cooking tutorial)
+
+### Overview
+- One-sentence summary: A chef demonstrates the three biggest mistakes home cooks make when searing steak.
+- Event type: Cooking tutorial / direct-to-camera education.
+- Main subject: How to sear steak properly.
+- Source quality notes: Clear overhead camera, good microphone, fast cuts between raw and finished steak.
+
+### Timeline
+- **[00:00–00:18]**: Chef holds up a raw steak and asks, "Why does your steak never look like this?" Visual: raw vs. seared split screen. Who appears: Chef Maria (confirmed by lower third). What changes: intro question establishes the problem. Clip potential: High — strong question hook.
+- **[00:18–00:52]**: Explains mistake #1: not drying the steak. Dialogue: "Water is the enemy of sear." What changes: moves from hook to first solution. Clip potential: Medium — useful but less viral.
+- **[00:52–01:30]**: Demonstrates mistake #2: overcrowding the pan. Visual: two steaks steaming instead of searing. Clip potential: High — clear visual contrast.
+- **[01:30–02:05]**: Mistake #3: flipping too early. Dialogue: "If it sticks, it's not ready." Clip potential: High — memorable one-liner.
+
+### Key Moments / Reveals
+- **[00:00]** Bold question hook. (Confirmed)
+- **[00:35]** First reveal: moisture kills crust. (Confirmed)
+- **[01:08]** Visual reveal: overcrowded pan steams. (Confirmed)
+- **[01:45]** Rule reveal: "If it sticks, it's not ready." (Confirmed)
+
+### Participants / People
+- **Chef Maria** — confirmed by on-screen lower third, host and sole speaker.
+
+### Quotes
+- *"Why does your steak never look like this?"* — Chef Maria (00:00)
+- *"Water is the enemy of sear."* — Chef Maria (00:31)
+- *"If it sticks, it's not ready."* — Chef Maria (01:42)
+
+### Visual / Action Moments
+- **[01:05]** Chef lifts lid off overcrowded pan; steam billows instead of browning.
+  - Setup: two steaks placed in a cold, crowded pan.
+  - Action type: demonstration / visual contrast.
+  - Result: steaks turn grey, not brown.
+  - Clip-worthy? Yes — instant visual proof of mistake #2.
+
+### Best Clips
+1. **[00:00–00:18]** — "Why does your steak never look like this?" Strong question hook + payoff shot of perfect sear. Context score: 3/3.
+2. **[01:30–02:05]** — "If it sticks, it's not ready." Strong one-liner + demo. Context score: 3/3.
+3. **[00:52–01:18]** — Overcrowded pan mistake. Visual contrast hook. Context score: 2/3.
+
+### Ambiguities
+- None.
+
+### Editor Notes
+- Strongest hook: the opening question at 00:00.
+- Best cold open: start at 00:00.
+- Likely short-form clips: 00:00–00:18, 01:30–02:05, 00:52–01:18.
+- Likely long-form recap: full 02:05 tutorial.
+- B-roll of finished steak can be used as hook visual.

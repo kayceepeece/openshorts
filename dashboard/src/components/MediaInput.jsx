@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Youtube, Upload, FileVideo, X } from 'lucide-react';
+import { Youtube, Upload, FileVideo, X, Loader2 } from 'lucide-react';
 import { getApiUrl } from '../config';
 
-export default function MediaInput({ onProcess, isProcessing }) {
+export default function MediaInput({ onProcess, isProcessing, processingLabel }) {
     const [youtubeUrlEnabled, setYoutubeUrlEnabled] = useState(true);
     const [mode, setMode] = useState('url'); // 'url' | 'file'
     const [url, setUrl] = useState('');
@@ -39,106 +39,111 @@ export default function MediaInput({ onProcess, isProcessing }) {
         }
     };
 
+    const tabStyle = (active) => ({
+        display: 'flex', alignItems: 'center', gap: 6,
+        padding: '0.5rem 0.75rem', fontSize: '0.8125rem', fontWeight: 500,
+        background: 'transparent', border: 'none', cursor: 'pointer',
+        color: active ? 'var(--primary)' : 'var(--muted)',
+        borderBottom: `2px solid ${active ? 'var(--primary)' : 'transparent'}`,
+        marginBottom: '-1px',
+        transition: 'color var(--dur-fast)',
+    });
+
     return (
-        <div className="bg-surface border border-white/5 rounded-2xl p-6 animate-[fadeIn_0.6s_ease-out]">
-            <div className="flex gap-4 mb-6 border-b border-white/5 pb-4">
+        <div>
+            <div style={{ display: 'flex', gap: 4, borderBottom: '1px solid var(--border)', marginBottom: '0.875rem' }}>
                 {youtubeUrlEnabled && (
-                    <button
-                        onClick={() => setMode('url')}
-                        className={`flex items-center gap-2 pb-2 px-2 transition-all ${mode === 'url'
-                            ? 'text-primary border-b-2 border-primary -mb-[17px]'
-                            : 'text-zinc-400 hover:text-white'
-                            }`}
-                    >
-                        <Youtube size={18} />
-                        YouTube URL
+                    <button type="button" onClick={() => setMode('url')} style={tabStyle(mode === 'url')} aria-pressed={mode === 'url'}>
+                        <Youtube size={15} /> YouTube URL
                     </button>
                 )}
-                <button
-                    onClick={() => setMode('file')}
-                    className={`flex items-center gap-2 pb-2 px-2 transition-all ${mode === 'file'
-                        ? 'text-primary border-b-2 border-primary -mb-[17px]'
-                        : 'text-zinc-400 hover:text-white'
-                        }`}
-                >
-                    <Upload size={18} />
-                    Upload File
+                <button type="button" onClick={() => setMode('file')} style={tabStyle(mode === 'file')} aria-pressed={mode === 'file'}>
+                    <Upload size={15} /> Upload File
                 </button>
             </div>
 
             <form onSubmit={handleSubmit}>
                 {mode === 'url' ? (
-                    <div className="space-y-4">
+                    <div>
                         <input
                             type="url"
                             value={url}
                             onChange={(e) => setUrl(e.target.value)}
                             placeholder="https://www.youtube.com/watch?v=..."
-                            className="input-field"
+                            className="os-input"
                             required
+                            aria-label="YouTube URL"
                         />
                     </div>
                 ) : (
                     <div
-                        className={`border-2 border-dashed rounded-xl p-8 text-center transition-all ${file ? 'border-primary/50 bg-primary/5' : 'border-zinc-700 hover:border-zinc-500 bg-white/5'
-                            }`}
-                        onDragOver={(e) => e.preventDefault()}
+                        className="os-input"
+                        style={{
+                            padding: '1.5rem', textAlign: 'center', cursor: 'pointer',
+                            borderStyle: 'dashed',
+                            borderColor: file ? 'var(--primary)' : 'var(--border-2)',
+                            display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 8,
+                        }}
+                        onDragOver={(e) => { e.preventDefault(); e.currentTarget.style.borderColor = 'var(--primary)'; }}
+                        onDragLeave={(e) => { e.currentTarget.style.borderColor = file ? 'var(--primary)' : 'var(--border-2)'; }}
                         onDrop={handleDrop}
                     >
                         {file ? (
-                            <div className="flex items-center justify-center gap-3 text-white">
-                                <FileVideo className="text-primary" />
-                                <span className="font-medium">{file.name}</span>
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, color: 'var(--ink)' }}>
+                                <FileVideo size={18} style={{ color: 'var(--primary)' }} />
+                                <span style={{ fontSize: '0.8125rem', fontWeight: 500 }}>{file.name}</span>
                                 <button
                                     type="button"
-                                    onClick={() => setFile(null)}
-                                    className="p-1 hover:bg-white/10 rounded-full"
+                                    onClick={(e) => { e.stopPropagation(); setFile(null); }}
+                                    className="os-btn os-btn-ghost os-btn-xs"
+                                    style={{ padding: 4 }}
+                                    aria-label="Remove file"
                                 >
-                                    <X size={16} />
+                                    <X size={14} />
                                 </button>
                             </div>
                         ) : (
-                            <label className="cursor-pointer block">
+                            <label style={{ cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6, width: '100%' }}>
                                 <input
                                     type="file"
                                     accept="video/*"
                                     onChange={(e) => setFile(e.target.files?.[0] || null)}
-                                    className="hidden"
+                                    style={{ display: 'none' }}
                                 />
-                                <Upload className="mx-auto mb-3 text-zinc-500" size={24} />
-                                <p className="text-zinc-400">Click to upload or drag and drop</p>
-                                <p className="text-xs text-zinc-600 mt-1">MP4, MOV up to 500MB</p>
+                                <Upload size={22} style={{ color: 'var(--subtle)' }} />
+                                <p style={{ fontSize: '0.8125rem', color: 'var(--muted)', margin: 0 }}>Click to upload or drag and drop</p>
+                                <p style={{ fontSize: '0.6875rem', color: 'var(--subtle)', margin: 0 }}>MP4, MOV up to 500MB</p>
                             </label>
                         )}
                     </div>
                 )}
 
-                <label className="flex items-start gap-2 mt-5 text-xs text-zinc-400 cursor-pointer select-none">
+                <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: '0.875rem', fontSize: '0.75rem', color: 'var(--muted)', cursor: 'pointer', userSelect: 'none', lineHeight: 1.5 }}>
                     <input
                         type="checkbox"
                         checked={acknowledged}
                         onChange={(e) => setAcknowledged(e.target.checked)}
-                        className="mt-0.5 accent-primary cursor-pointer"
+                        style={{ marginTop: 2 }}
+                        className="os-checkbox"
                     />
                     <span>
-                        I confirm I own this content or have the rights to process it. I am responsible for any content I submit. See our <a href="/#legal" target="_blank" rel="noopener noreferrer" className="text-primary underline" onClick={(e) => e.stopPropagation()}>Terms & Privacy</a>.
+                        I confirm I own this content or have the rights to process it. I am responsible for any content I submit. See our <a href="/#legal" target="_blank" rel="noopener noreferrer" style={{ color: 'var(--primary)', textDecoration: 'underline' }} onClick={(e) => e.stopPropagation()}>Terms &amp; Privacy</a>.
                     </span>
                 </label>
 
                 <button
                     type="submit"
                     disabled={isProcessing || !acknowledged || (mode === 'url' && !url) || (mode === 'file' && !file)}
-                    className="w-full btn-primary mt-4 flex items-center justify-center gap-2"
+                    className="os-btn os-btn-primary"
+                    style={{ width: '100%', marginTop: '0.875rem', justifyContent: 'center' }}
                 >
                     {isProcessing ? (
                         <>
-                            <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                            Processing Video...
+                            <Loader2 size={14} className="animate-spin" />
+                            {processingLabel || 'Analyzing Video...'}
                         </>
                     ) : (
-                        <>
-                            Generate Clips
-                        </>
+                        'Generate Clips'
                     )}
                 </button>
             </form>

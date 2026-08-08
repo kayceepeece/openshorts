@@ -713,7 +713,7 @@ def process_video_to_vertical(input_video, final_output_video):
         'ffmpeg', '-y', '-f', 'rawvideo', '-vcodec', 'rawvideo',
         '-s', f'{OUTPUT_WIDTH}x{OUTPUT_HEIGHT}', '-pix_fmt', 'bgr24',
         '-r', str(fps), '-i', '-', '-c:v', 'libx264',
-        '-preset', 'fast', '-crf', '23', '-an', temp_video_output
+        '-pix_fmt', 'yuv420p', '-preset', 'fast', '-crf', '23', '-an', temp_video_output
     ]
 
     ffmpeg_process = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -968,47 +968,7 @@ def get_viral_clips(transcript_result, video_duration, content_type='general'):
         print(f"❌ Gemini Error: {e}")
         return None
 
-CLIPPING_PROMPT_TEMPLATE = (
-"""
-You are a senior short-form video editor. Read the ENTIRE transcript and visual dossier for the input video(s) to choose the 3–15 MOST VIRAL moments for TikTok/IG Reels/YouTube Shorts. Each clip must be between 15 and 60 seconds long.
-
-⚠️ FFMPEG TIME CONTRACT — STRICT REQUIREMENTS:
-- Return timestamps in ABSOLUTE SECONDS from the start of the video (usable in: ffmpeg -ss <start> -to <end> -i <input> ...).
-- Only NUMBERS with decimal point, up to 3 decimals (examples: 0, 1.250, 17.350).
-- Ensure 0 ≤ start < end ≤ VIDEO_DURATION_SECONDS.
-- Each clip between 15 and 60 s (inclusive).
-- Prefer starting 0.2–0.4 s BEFORE the hook and ending 0.2–0.4 s AFTER the payoff.
-- Use silence moments for natural cuts; never cut in the middle of a word or phrase.
-- STRICTLY FORBIDDEN to use time formats other than absolute seconds.
-"""
-+ ("\n" + CLIPS_GENERAL_RULES + "\n" if CLIPS_GENERAL_RULES else "")
-+ """
-{input_data_section}
-
-{user_detection_prompt}
-
-STRICT EXCLUSIONS:
-- No generic intros/outros or purely sponsorship segments unless they contain the hook.
-- No clips < 15 s or > 60 s.
-
-OUTPUT — RETURN ONLY VALID JSON (no markdown, no comments). Order clips by predicted performance (best to worst). Write descriptions that are natural to the content type and optimised for each platform:
-{{
-  "shorts": [
-    {{
-      "video_index": <0-based index of the video this clip is from, e.g., 0 if only one video is provided>,
-      "start": <number in seconds, e.g., 12.340>,
-      "end": <number in seconds, e.g., 37.900>,
-      "video_description_for_tiktok": "<description for TikTok oriented to get views>",
-      "video_description_for_instagram": "<description for Instagram oriented to get views>",
-      "video_title_for_youtube_short": "<title for YouTube Short oriented to get views 100 chars max>",
-      "viral_hook_text": "<SHORT punchy text overlay (max 10 words). MUST BE IN THE SAME LANGUAGE AS THE VIDEO TRANSCRIPT. Examples: 'POV: You realized...', 'Did you know?', 'Stop doing this!'>"
-    }}
-  ]
-}}
-"""
-)
-
-def generate_dossier(video_path, api_key, content_type='general'):
+def generate_dossier(video_path, api_key, content_type='general', custom_prompt=''):
     print("📤 Uploading video to Gemini File API...")
     client = genai.Client(api_key=api_key)
     file_upload = client.files.upload(file=video_path)
@@ -1048,6 +1008,15 @@ def generate_dossier(video_path, api_key, content_type='general'):
 ## Ambiguities
 ## Editor Notes (hook, cold open, short-form potential)"""
 
+    user_instruction_section = ""
+    if custom_prompt:
+        user_instruction_section = f"""
+ADDITIONAL USER INSTRUCTIONS — APPLY THESE TO THE DOSSIER:
+{custom_prompt.strip()}
+
+When these instructions conflict with the default structure above, prioritize the user instructions for relevance, but still follow the required output format.
+"""
+
     prompt = f"""Analyze this video like a forensic content assistant.
 
 Goal: Produce a complete Markdown dossier so another AI can generate 
@@ -1062,7 +1031,7 @@ Output requirements:
 - Include any announcement, reveal, or key moment
 - Include only facts supported by the video
 - Do not hallucinate names, scores, or outcomes
-
+{user_instruction_section}
 Structure:
 {structure_text}"""
 
@@ -1257,6 +1226,7 @@ if __name__ == '__main__':
     parser.add_argument('--dossier', type=str, nargs='*', help="Dossier file(s) for clipping, or use as boolean flag in analyze mode.")
     parser.add_argument('--transcript', type=str, nargs='*', help="Transcript JSON file(s) for clipping mode.")
     parser.add_argument('--prompt', type=str, default="", help="Custom prompt for clip detection.")
+    parser.add_argument('--custom-prompt', type=str, default="", help="Custom instructions/prompt for dossier generation in analyze mode.")
     parser.add_argument('--content-type', type=str, default="general", help="Domain/content type template to use (general, sports, podcast, lecture, gaming, interview).")
     parser.add_argument('--keep-original', action='store_true', help="Keep downloaded YouTube video (legacy mode).")
     parser.add_argument('--skip-analysis', action='store_true', help="Skip AI analysis and convert whole video (legacy mode).")
@@ -1312,7 +1282,7 @@ if __name__ == '__main__':
             if not api_key:
                 print("❌ Error: GEMINI_API_KEY not found in environment variables.")
                 sys.exit(1)
-            dossier_text = generate_dossier(input_video, api_key, args.content_type)
+            dossier_text = generate_dossier(input_video, api_key, args.content_type, custom_prompt=args.custom_prompt)
             dossier_file = os.path.join(output_dir, "dossier.md")
             with open(dossier_file, 'w') as f:
                 f.write(dossier_text)
@@ -1415,6 +1385,7 @@ if __name__ == '__main__':
                 '-to', str(end), 
                 '-i', input_video,
                 '-c:v', 'libx264', '-crf', '18', '-preset', 'fast',
+                '-pix_fmt', 'yuv420p',
                 '-c:a', 'aac',
                 clip_temp_path
             ]
@@ -1512,6 +1483,7 @@ if __name__ == '__main__':
                         '-to', str(end), 
                         '-i', input_video,
                         '-c:v', 'libx264', '-crf', '18', '-preset', 'fast',
+                        '-pix_fmt', 'yuv420p',
                         '-c:a', 'aac',
                         clip_temp_path
                     ]

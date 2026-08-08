@@ -1184,6 +1184,7 @@ def composite_video(
             "-i", talking_head_path,
             "-vf", sub_filter,
             "-c:v", "libx264", "-preset", "fast", "-crf", "22",
+            "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "128k",
             output_path,
         ]

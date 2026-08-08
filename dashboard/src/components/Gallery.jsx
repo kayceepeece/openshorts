@@ -52,6 +52,8 @@ export default function Gallery() {
     // Infinite scroll observer
     useEffect(() => {
         if (!hasMore || loadingMore || loading) return;
+        const el = loaderRef.current;
+        if (!el) return;
 
         const observer = new IntersectionObserver(
             (entries) => {
@@ -62,21 +64,17 @@ export default function Gallery() {
             { rootMargin: '200px', threshold: 0.1 }
         );
 
-        if (loaderRef.current) {
-            observer.observe(loaderRef.current);
-        }
+        observer.observe(el);
 
         return () => {
-            if (loaderRef.current) {
-                observer.unobserve(loaderRef.current);
-            }
+            observer.unobserve(el);
         };
     }, [hasMore, loadingMore, loading, offset, fetchClips]);
 
     if (loading) {
         return (
-            <div className="h-full flex flex-col items-center justify-center text-zinc-500 animate-[fadeIn_0.5s_ease-out]">
-                <Loader2 size={32} className="animate-spin mb-4 text-primary" />
+            <div className="h-full flex flex-col items-center justify-center os-fade-in" style={{ color: 'var(--muted)' }}>
+                <Loader2 size={32} className="animate-spin" style={{ marginBottom: 16, color: 'var(--primary)' }} />
                 <p>Loading your viral history...</p>
             </div>
         );
@@ -84,7 +82,7 @@ export default function Gallery() {
 
     if (error) {
         return (
-            <div className="h-full flex flex-col items-center justify-center text-red-400 p-6">
+            <div className="h-full flex flex-col items-center justify-center p-6 os-fade-in" style={{ color: 'var(--error)' }}>
                 <AlertCircle size={32} className="mb-4" />
                 <p>Error loading gallery: {error}</p>
                 <button
@@ -93,7 +91,7 @@ export default function Gallery() {
                         setOffset(0);
                         fetchClips(0, false);
                     }}
-                    className="mt-4 px-4 py-2 bg-white/5 hover:bg-white/10 rounded-lg text-sm text-white transition-colors"
+                    className="os-btn os-btn-secondary mt-4"
                 >
                     Retry
                 </button>
@@ -102,25 +100,25 @@ export default function Gallery() {
     }
 
     return (
-        <div className="h-full overflow-y-auto p-6 md:p-8 animate-[fadeIn_0.3s_ease-out]">
+        <div className="h-full overflow-y-auto os-scroll p-6 md:p-8 os-fade-in">
             <div className="flex items-center justify-between mb-8">
-                <h1 className="text-2xl font-bold flex items-center gap-3">
-                    <LayoutGrid className="text-primary" /> Clip Gallery
+                <h1 className="text-2xl font-bold flex items-center gap-3" style={{ color: 'var(--ink)' }}>
+                    <LayoutGrid style={{ color: 'var(--primary)' }} /> Clip Gallery
                 </h1>
-                <span className="text-xs bg-white/10 text-white px-3 py-1 rounded-full border border-white/5">
+                <span className="os-chip" style={{ color: 'var(--ink)' }}>
                     {clips.length} {clips.length === 1 ? 'Clip' : 'Clips'}{hasMore ? '+' : ''}
                 </span>
             </div>
 
             {clips.length === 0 ? (
-                <div className="text-center py-20 text-zinc-500">
-                    <p className="text-lg mb-2">No clips found yet.</p>
+                <div className="text-center py-20 os-fade-in" style={{ color: 'var(--muted)' }}>
+                    <p className="text-lg mb-2" style={{ color: 'var(--ink)' }}>No clips found yet.</p>
                     <p className="text-sm">Process some videos to populate your gallery!</p>
                 </div>
             ) : (
                 <>
                     <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4 gap-6 pb-10">
-                        {clips.map((clip, i) => (
+                        {clips.map((clip) => (
                             <GalleryCard key={`${clip.job_id}-${clip.index}`} clip={clip} />
                         ))}
                     </div>
@@ -132,7 +130,7 @@ export default function Gallery() {
                             className="flex justify-center py-8"
                         >
                             {loadingMore && (
-                                <div className="flex items-center gap-2 text-zinc-500">
+                                <div className="flex items-center gap-2" style={{ color: 'var(--muted)' }}>
                                     <Loader2 size={20} className="animate-spin" />
                                     <span className="text-sm">Loading more clips...</span>
                                 </div>
@@ -144,4 +142,3 @@ export default function Gallery() {
         </div>
     );
 }
-

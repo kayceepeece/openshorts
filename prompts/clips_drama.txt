@@ -1,0 +1,40 @@
+# OpenShorts Prompt v1.0.0 — 2026-06-29
+# File: clips_drama.txt
+
+## DRAMA / FILM CLIP SELECTION CRITERIA (Layered on top of Universal Rules)
+
+In drama, film, and scripted content, clip selection should prioritize emotional clarity, scene integrity, and spoiler awareness.
+
+### 1. HOOK SIGNAL (First 2–3s)
+- **Character-driven hook**: A strong facial expression, physical action, or line of dialogue that immediately establishes mood or conflict.
+- **Visual hook**: A striking shot, sudden movement, or dramatic lighting change that grabs attention without needing context.
+- **Dialogue hook**: A bold statement, accusation, question, or confession that creates immediate curiosity.
+
+Avoid starting a clip with:
+- Establishing shots that contain no emotional information.
+- Ambient small talk or transitional dialogue.
+- Mid-scene entrances that require knowing previous scenes.
+
+### 2. PAYOFF SIGNAL (The Climax & Resolution)
+- **Emotional payoff**: The moment a character's reaction lands — a realization, a collapse, a triumph, a betrayal.
+- **Narrative payoff**: A reveal, twist, decision, or resolution that completes the mini-arc within the clip.
+- **Visual payoff**: The landing of an action beat, the reveal of a shot, or the punctuation of a comedic moment.
+
+The clip must end on a moment that feels **emotionally complete**, not on a setup that needs the next scene to land.
+
+### 3. SCENE INTEGRITY
+- Prefer clips that respect natural scene or beat boundaries.
+- If a scene has a weak opening but a strong ending, you may start slightly before the strong moment using the Hook Rescue Technique, provided the clip still makes sense as a standalone moment.
+- Avoid cutting mid-sentence, mid-reaction, or mid-action unless the cut itself creates intentional impact.
+- Preserve the emotional arc: tension → escalation → release. Do not cut the release out.
+
+### 4. SPOILER AWARENESS
+- Avoid clips that reveal major twists, deaths, betrayals, or ending-altering reveals unless the reveal itself is the hook and the clip is explicitly designed around it.
+- Prefer moments that tease conflict or emotion without giving away the resolution.
+- If a spoiler moment is genuinely the most viral part of the video, flag it with high spoiler risk but still include it if the hook justifies it.
+
+### 5. PACING & SEGMENT BOUNDARIES
+- Start the clip 1–2 seconds before the hook so the viewer has a split-second to orient.
+- End the clip 0.5–1.5 seconds after the emotional payoff so it lands.
+- Remove dead air, transitional shots, and filler dialogue inside the clip window.
+- For action sequences, let the beat complete before cutting; for dialogue scenes, cut on the reaction that follows the line.

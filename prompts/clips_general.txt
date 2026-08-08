@@ -1,3 +1,6 @@
+# OpenShorts Prompt v1.0.0 — 2026-06-29
+# File: clips_general.txt
+
 ## CLIP SELECTION FRAMEWORK — UNIVERSAL VIRALITY RULES
 ## Distilled from professional clip editor methodology (How To Clip)
 ## These rules apply to ALL content types. Domain-specific rules layer on top.
@@ -105,3 +108,43 @@ When ranking clips from best to worst, score each on these factors in order:
 
 Rank clips by TOTAL SCORE (max 12). Include only clips scoring ≥ 6.
 If fewer than 3 clips score ≥ 6, lower the threshold to ≥ 4 rather than returning nothing.
+
+---
+
+## Example Output
+
+For a hypothetical 2-minute cooking tutorial, the output should look like this:
+
+```json
+{
+  "shorts": [
+    {
+      "video_index": 0,
+      "start": 0.0,
+      "end": 18.25,
+      "video_description_for_tiktok": "Why does your steak never look restaurant-perfect? 🥩 The #1 mistake home cooks make is moisture. Here's how to fix it. #CookingTips #Steak",
+      "video_description_for_instagram": "If your steak turns grey instead of golden, this is probably why. Save this for your next cookout. 🥩🔥 #SteakNight #CookingHacks",
+      "video_title_for_youtube_short": "The #1 Steak-Searing Mistake",
+      "viral_hook_text": "Why does your steak never look like this?"
+    },
+    {
+      "video_index": 0,
+      "start": 92.5,
+      "end": 118.75,
+      "video_description_for_tiktok": "The golden rule of searing steak: if it sticks, it's not ready. 🧠 #SteakTips #Cooking",
+      "video_description_for_instagram": "Stop forcing your steak off the pan. This one line will change how you cook forever. #ChefTips",
+      "video_title_for_youtube_short": "If it sticks, it's not ready",
+      "viral_hook_text": "Stop flipping your steak too early"
+    },
+    {
+      "video_index": 0,
+      "start": 55.25,
+      "end": 80.0,
+      "video_description_for_tiktok": "Overcrowding the pan is ruining your steak. Here's the visual proof. 🍳 #CookingMistakes #Steak",
+      "video_description_for_instagram": "Two steaks. One pan. No sear. Here's why spacing matters. #Cooking101",
+      "video_title_for_youtube_short": "Why overcrowding kills your sear",
+      "viral_hook_text": "This is why your steak turns grey"
+    }
+  ]
+}
+```

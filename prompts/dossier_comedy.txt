@@ -1,0 +1,104 @@
+# OpenShorts Prompt v1.0.0 — 2026-06-29
+# File: dossier_comedy.txt
+
+## Overview
+- One-sentence summary of the video.
+- Title / format (standup set, sketch, sitcom episode, roasting session, improv, comedic monologue, comedy special, prank, sketch channel, parody, voiceover that clips well).
+- Primary comedic style (observational, absurdist, character-driven, roast/insult, deadpan, slapstick, sketch, situational).
+- Source quality notes (audience audio clarity, mic clarity, camera work, laughter edit, any technical issues).
+
+## Timeline
+Break the video into logical [MM:SS–MM:SS] segments. For each segment, include:
+- What is shown visually (comedian on stage, skit performance, characters, props, audience).
+- What is said (setup and punchline, not a full transcript).
+- Who appears.
+- What changes (build-up, tension, release/laugh, topic shift, energy shift).
+- Clip potential (low / medium / high) and one-sentence reason.
+
+## Setups & Punchlines
+For every joke, bit, or comedic beat that becomes visible or audible:
+- Timestamp.
+- Setup (the premise being built).
+- Punchline (the payoff line or reversal).
+- Delivery style (deadpan, yelled, whispered, off-hand, self-aware, character voice).
+- Who delivered it.
+- Laugh intensity (quiet / medium / roaring) if the audience is audible.
+- Clip-worthy? (yes / no / maybe) and one-sentence reason.
+
+## Running Gags & Callbacks
+For each recurring joke, running gag, or callback:
+- First appearance timestamp and original setup.
+- Repeat beats with each timestamp.
+- Where it pays off / lands best.
+- Whether the payoff works for a cold viewer (does it need prior setup to be funny?).
+
+## Roasts & Insults
+For each roast, insult exchange, or dis:
+- Timestamp.
+- Target.
+- Setup.
+- Punchline or insult.
+- Crowd / target reaction.
+- Clip-worthy? (yes / no / maybe) and reason. Note where context is needed for the insult to land.
+
+## Visual & Physical Comedy
+For each visual-, gesture-, prop-, or sight-gag, and for any great reaction shot:
+- Timestamp.
+- What is shown.
+- Whether it works without audio (pure visual comedy vs. dialogue-dependent).
+- Clip-worthy? (yes / no / maybe) and reason.
+
+## Crowd & Reaction Audio
+For usable crowd, audience, host, or co-panel reactions:
+- Timestamp.
+- What the reaction is (laugh, gasp, applause, cheer).
+- How it helps the clip (laugh = natural cut point / applause = payoff punctuation).
+- Whether the reaction extends the joke or kills the momentum.
+
+## Participants / People
+### Confirmed names
+For each: name, role (comedian / host / guest / audience member), and how identified (intro, on-screen graphic, spoken).
+
+### Inferred / unknown people
+For each: physical description, voice characteristics, role, and distinguishing features. Mark as inferred.
+
+## Quotes & Catchphrases
+Include short verbatim quotes only when clearly audible and important. Include speaker and timestamp.
+
+## Best Clips
+Rank the top moments for short-form clipping. For each:
+- Timestamp range.
+- Why it works as a clip (punchline timing, crowd laugh, visual gag, roast reveal, character beat).
+- Suggested hook (first 2–3 seconds).
+- Suggested payoff / ending.
+- Standalone context score (1–3): does it make sense without the full source?
+
+### How To Clip Compliance (evaluate EVERY candidate)
+Each ranked clip must pass the three How To Clip rules. Record the result for every candidate.
+  A) HOOK CHECK — the first 2–3 seconds must open with EITHER a bold statement OR a bold question.
+     For comedy, an audible crowd laugh or a strong punchline opening can serve as the hook if it is bold
+     and self-contained. REJECT or re-cut anything opening with small talk, filler, pleasantries, or
+     mid-thought context. If the strongest bit has a weak opening, use hook transplanting: pull a line
+     made later in the video to the front (even if repeated).
+  B) POINT CHECK — the punchline / joke / beat must land within the first 10 seconds.
+     Cut dead space, "um"/"uh", repetition, rambling, and thinking aloud. For comedy, note when a bit
+     needs part of its setup to land; if so, keep the setup minimal and still make the joke land by
+     the 10-second mark.
+  C) COMPLETE THOUGHT — the clip must end on a finished beat (satisfied, not cut off).
+     REJECT clips that stop mid-joke or end on an unresolved "but here's the thing…" with no punchline.
+Reject any clip failing B or C. For a failed hook (A) with otherwise strong content, re-cut the start
+(hook transplanting) instead of dropping the clip. Label each ranked clip with its compliance status,
+e.g. "A✓ B✓ C✓ D3" or "A✗→transplant B✓ C✓ D2".
+
+## Ambiguities
+List anything unclear, partially hidden, cut off, or not confidently identifiable (comedy setup references, names, punchline audio, audience reactions).
+
+## Editor Notes
+- Strongest hook in the video.
+- Best cold-open start point.
+- Best clip that works with no audio (visual comedy).
+- Best "reaction" clip (crowd / host losing it).
+- Likely short-form clips.
+- Likely long-form recap segments.
+- Bits or gags to avoid (setup-heavy, too inside, dead time).
+- Where the laugh die-off to end a clip cleanly vs. cut on the laugh peak.

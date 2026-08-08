@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { X, Type, Loader2 } from 'lucide-react';
+import { Type, Loader2 } from 'lucide-react';
 import { getApiUrl } from '../config';
+import ModalShell from './ModalShell';
+import Segmented from './Segmented';
 import RemotionPreview from './RemotionPreview';
 
 const FONT_OPTIONS = [
@@ -13,12 +15,8 @@ const FONT_OPTIONS = [
 ];
 
 const COLOR_PRESETS = [
-    { color: '#FFFFFF', label: 'White' },
-    { color: '#FFFF00', label: 'Yellow' },
-    { color: '#00FFFF', label: 'Cyan' },
-    { color: '#00FF00', label: 'Green' },
-    { color: '#FF0000', label: 'Red' },
-    { color: '#FF69B4', label: 'Pink' },
+    '#FFFFFF', '#F5F5F5', '#FFFF00', '#00FFFF',
+    '#00FF00', '#FF0000', '#FF69B4',
 ];
 
 const ANIMATION_OPTIONS = [
@@ -28,9 +26,55 @@ const ANIMATION_OPTIONS = [
     { value: 'none', label: 'None' },
 ];
 
+const FIELD_LABEL = {
+    fontSize: '0.75rem', fontWeight: 500, color: 'var(--muted)',
+    display: 'block', marginBottom: 6,
+};
+
+function ColorSwatches({ value, onChange, presets = COLOR_PRESETS }) {
+    const active = (c) => value?.toLowerCase() === c.toLowerCase();
+    return (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+            {presets.map((c) => (
+                <button
+                    key={c}
+                    type="button"
+                    onClick={() => onChange(c)}
+                    style={{
+                        width: 26, height: 26, borderRadius: '50%', padding: 0, flexShrink: 0, cursor: 'pointer',
+                        background: c,
+                        border: `2px solid ${active(c) ? 'var(--ink)' : 'var(--border-2)'}`,
+                        transition: 'border-color var(--dst-fast)',
+                    }}
+                    aria-label={`Color ${c}`}
+                    aria-pressed={active(c)}
+                />
+            ))}
+            <label
+                title="Custom color"
+                style={{
+                    width: 26, height: 26, borderRadius: '50%',
+                    border: '2px dashed var(--border-2)', cursor: 'pointer',
+                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                    position: 'relative', overflow: 'hidden',
+                }}
+            >
+                <span style={{ fontSize: '0.8125rem', color: 'var(--subtle)' }}>+</span>
+                <input
+                    type="color"
+                    value={value}
+                    onChange={(e) => onChange(e.target.value)}
+                    style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }}
+                    aria-label="Custom color"
+                />
+            </label>
+        </div>
+    );
+}
+
 export default function SubtitleModal({ isOpen, onClose, onGenerate, isProcessing, videoUrl, jobId, clipIndex, existingHook }) {
     const [position, setPosition] = useState('bottom');
-    const [fontSize, setFontSize] = useState(24);
+    const FONT_SIZE = 24;
     const [fontName, setFontName] = useState('Verdana');
     const [fontColor, setFontColor] = useState('#FFFFFF');
     const [highlightColor, setHighlightColor] = useState('#FFDD00');
@@ -49,7 +93,6 @@ export default function SubtitleModal({ isOpen, onClose, onGenerate, isProcessin
     const [captionsLoading, setCaptionsLoading] = useState(false);
     const [useRemotionPreview, setUseRemotionPreview] = useState(false);
 
-    // Fetch word-level captions when modal opens
     useEffect(() => {
         if (!isOpen || !jobId || clipIndex === undefined) return;
 
@@ -71,7 +114,6 @@ export default function SubtitleModal({ isOpen, onClose, onGenerate, isProcessin
             .finally(() => setCaptionsLoading(false));
     }, [isOpen, jobId, clipIndex]);
 
-    // When user edits text, redistribute words across original timestamps
     const handleTextEdit = (newText) => {
         setEditableText(newText);
         const newWords = newText.split(/\s+/).filter(w => w.length > 0);
@@ -80,7 +122,6 @@ export default function SubtitleModal({ isOpen, onClose, onGenerate, isProcessin
             return;
         }
 
-        // Distribute new words across the time span of original captions
         const totalDurationMs = originalCaptions[originalCaptions.length - 1].endMs - originalCaptions[0].startMs;
         const startMs = originalCaptions[0].startMs;
         const wordDurationMs = totalDurationMs / newWords.length;
@@ -95,13 +136,12 @@ export default function SubtitleModal({ isOpen, onClose, onGenerate, isProcessin
 
     if (!isOpen) return null;
 
-    // Build subtitle config for Remotion
     const subtitleConfig = {
         captions,
         position,
         style: {
             fontFamily: fontName,
-            fontSize: fontSize * 2.2, // Scale up for 1080p (modal fontSize is for small preview)
+            fontSize: FONT_SIZE * 2.2,
             fontColor,
             highlightColor,
             borderColor,
@@ -112,7 +152,6 @@ export default function SubtitleModal({ isOpen, onClose, onGenerate, isProcessin
         },
     };
 
-    // Fallback: static CSS preview (same as original)
     const bw = Math.max(borderWidth, 0);
     const bc = borderColor;
     const outlineShadow = bw > 0 ? [
@@ -142,21 +181,25 @@ export default function SubtitleModal({ isOpen, onClose, onGenerate, isProcessin
     };
 
     return (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-[fadeIn_0.2s_ease-out]">
-            <div className="bg-[#121214] border border-white/10 p-6 rounded-2xl w-full max-w-5xl shadow-2xl relative flex flex-col md:flex-row gap-6 max-h-[90vh]">
-                <button
-                    onClick={onClose}
-                    className="absolute top-4 right-4 text-zinc-500 hover:text-white z-10"
-                >
-                    <X size={20} />
-                </button>
-
+        <ModalShell
+            isOpen={isOpen}
+            onClose={onClose}
+            title="Auto Subtitles"
+            icon={<Type size={14} style={{ color: 'var(--primary)', flexShrink: 0 }} />}
+            maxWidth={840}
+        >
+            <div style={{ display: 'flex', gap: '1.25rem' }}>
                 {/* Left: Preview */}
-                <div className="flex-1 flex flex-col items-center justify-center bg-black rounded-lg border border-white/5 overflow-hidden relative aspect-[9/16] max-h-[600px]">
+                <div style={{
+                    flex: 1, minWidth: 0,
+                    display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                    background: 'var(--bg)', borderRadius: 8, overflow: 'hidden', position: 'relative',
+                    aspectRatio: '9/16', maxHeight: '60vh',
+                }}>
                     {captionsLoading ? (
-                        <div className="flex items-center gap-2 text-zinc-400">
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8, color: 'var(--muted)', fontSize: '0.875rem' }}>
                             <Loader2 size={16} className="animate-spin" />
-                            <span className="text-sm">Loading preview...</span>
+                            Loading preview...
                         </div>
                     ) : useRemotionPreview ? (
                         <RemotionPreview
@@ -167,14 +210,14 @@ export default function SubtitleModal({ isOpen, onClose, onGenerate, isProcessin
                         />
                     ) : (
                         <>
-                            <video src={videoUrl} className="w-full h-full object-contain opacity-50" muted playsInline />
-                            <div className={`absolute w-full px-8 text-center transition-all duration-300 pointer-events-none flex flex-col items-center justify-center
-                                ${position === 'top' ? 'top-20' : ''}
-                                ${position === 'middle' ? 'top-0 bottom-0' : ''}
-                                ${position === 'bottom' ? 'bottom-20' : ''}
-                            `}>
+                            <video src={videoUrl} style={{ width: '100%', height: '100%', objectFit: 'contain', opacity: 0.5 }} muted playsInline />
+                            <div style={{
+                                position: 'absolute', width: '100%', padding: '0 2rem', textAlign: 'center',
+                                display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none',
+                                ...(position === 'top' ? { top: '5rem' } : position === 'bottom' ? { bottom: '5rem' } : {}),
+                            }}>
                                 <span style={fallbackPreviewStyle}>
-                                    This is how your subtitles<br/>will appear on the video
+                                    This is how your subtitles<br />will appear on the video
                                 </span>
                             </div>
                         </>
@@ -182,192 +225,134 @@ export default function SubtitleModal({ isOpen, onClose, onGenerate, isProcessin
                 </div>
 
                 {/* Right: Controls */}
-                <div className="w-full md:w-80 flex flex-col">
-                    <h3 className="text-xl font-bold text-white mb-4 flex items-center gap-2 shrink-0">
-                        <Type className="text-primary" /> Auto Subtitles
-                    </h3>
+                <div className="os-scroll" style={{
+                    width: 300, flexShrink: 0, overflowY: 'auto', paddingRight: 4,
+                    display: 'flex', flexDirection: 'column', gap: '1rem', maxHeight: '60vh',
+                }}>
+                    <Segmented label="Position" options={['top', 'middle', 'bottom'].map(p => ({ value: p, label: p.charAt(0).toUpperCase() + p.slice(1) }))} value={position} onChange={setPosition} columns={3} />
+                    <Segmented label="Animation" options={ANIMATION_OPTIONS} value={animation} onChange={setAnimation} columns={2} />
 
-                    <div className="space-y-5 flex-1 overflow-y-auto custom-scrollbar pr-1">
-                        {/* Position Selector */}
+                    {useRemotionPreview && (
                         <div>
-                            <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-2 block">Position</label>
-                            <div className="grid grid-cols-3 gap-2">
-                                {['top', 'middle', 'bottom'].map((pos) => (
-                                    <button
-                                        key={pos}
-                                        onClick={() => setPosition(pos)}
-                                        className={`p-2 rounded-lg border text-center text-xs font-medium transition-all ${position === pos ? 'bg-primary/20 border-primary text-white' : 'bg-white/5 border-white/5 text-zinc-400 hover:bg-white/10'}`}
-                                    >
-                                        {pos.charAt(0).toUpperCase() + pos.slice(1)}
-                                    </button>
-                                ))}
-                            </div>
-                        </div>
-
-                        {/* Animation Style (new) */}
-                        <div>
-                            <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-2 block">Animation</label>
-                            <div className="grid grid-cols-2 gap-2">
-                                {ANIMATION_OPTIONS.map((opt) => (
-                                    <button
-                                        key={opt.value}
-                                        onClick={() => setAnimation(opt.value)}
-                                        className={`p-2 rounded-lg border text-center text-xs font-medium transition-all ${animation === opt.value ? 'bg-primary/20 border-primary text-white' : 'bg-white/5 border-white/5 text-zinc-400 hover:bg-white/10'}`}
-                                    >
-                                        {opt.label}
-                                    </button>
-                                ))}
-                            </div>
-                        </div>
-
-                        {/* Editable Transcript (collapsible) */}
-                        {useRemotionPreview && (
-                            <div>
-                                <button
-                                    type="button"
-                                    onClick={() => setShowTextEditor(!showTextEditor)}
-                                    className="w-full flex items-center justify-between text-xs font-bold text-zinc-400 uppercase tracking-wider mb-2"
-                                >
-                                    <span>Edit Text ({captions.length} words)</span>
-                                    <span className={`transition-transform ${showTextEditor ? 'rotate-180' : ''}`}>▾</span>
-                                </button>
-                                {showTextEditor && (
-                                    <textarea
-                                        value={editableText}
-                                        onChange={(e) => handleTextEdit(e.target.value)}
-                                        rows={5}
-                                        className="w-full bg-black/40 border border-white/10 rounded-lg p-2.5 text-sm text-white focus:outline-none focus:border-primary/50 resize-none leading-relaxed animate-[fadeIn_0.15s_ease-out]"
-                                        placeholder="Edit subtitle text..."
-                                    />
-                                )}
-                            </div>
-                        )}
-
-                        {/* Font Family */}
-                        <div>
-                            <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-2 block">Font</label>
-                            <select
-                                value={fontName}
-                                onChange={(e) => setFontName(e.target.value)}
-                                className="w-full bg-black/40 border border-white/10 rounded-lg p-2 text-sm text-white focus:outline-none focus:border-primary/50"
+                            <button
+                                type="button"
+                                onClick={() => setShowTextEditor(!showTextEditor)}
+                                className="os-btn os-btn-ghost os-btn-sm"
+                                style={{ width: '100%', justifyContent: 'space-between', fontSize: '0.75rem', fontWeight: 600, color: 'var(--muted)', marginBottom: 6, gap: 6 }}
                             >
-                                {FONT_OPTIONS.map((f) => (
-                                    <option key={f.value} value={f.value} style={{ fontFamily: f.value }}>{f.label}</option>
-                                ))}
-                            </select>
-                        </div>
-
-                        {/* Text Color */}
-                        <div>
-                            <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-2 block">Text Color</label>
-                            <div className="flex flex-wrap gap-2">
-                                {COLOR_PRESETS.map((c) => (
-                                    <button
-                                        key={c.color}
-                                        onClick={() => setFontColor(c.color)}
-                                        className={`w-7 h-7 rounded-full border-2 transition-all ${fontColor === c.color ? 'border-white scale-110' : 'border-white/20 hover:border-white/50'}`}
-                                        style={{ backgroundColor: c.color }}
-                                        title={c.label}
-                                    />
-                                ))}
-                                <label className="w-7 h-7 rounded-full border-2 border-dashed border-white/20 cursor-pointer flex items-center justify-center hover:border-white/50 transition-all overflow-hidden relative" title="Custom color">
-                                    <span className="text-[10px] text-zinc-400">+</span>
-                                    <input type="color" value={fontColor} onChange={(e) => setFontColor(e.target.value)} className="absolute inset-0 opacity-0 cursor-pointer" />
-                                </label>
-                            </div>
-                        </div>
-
-                        {/* Highlight Color (new) */}
-                        <div>
-                            <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-2 block">Highlight Color</label>
-                            <div className="flex flex-wrap gap-2">
-                                {[{ color: '#FFDD00', label: 'Gold' }, { color: '#FF4444', label: 'Red' }, { color: '#00FF88', label: 'Green' }, { color: '#00BBFF', label: 'Blue' }, { color: '#FF69B4', label: 'Pink' }].map((c) => (
-                                    <button
-                                        key={c.color}
-                                        onClick={() => setHighlightColor(c.color)}
-                                        className={`w-7 h-7 rounded-full border-2 transition-all ${highlightColor === c.color ? 'border-white scale-110' : 'border-white/20 hover:border-white/50'}`}
-                                        style={{ backgroundColor: c.color }}
-                                        title={c.label}
-                                    />
-                                ))}
-                            </div>
-                        </div>
-
-                        {/* Border / Outline */}
-                        <div>
-                            <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider mb-2 block">Border</label>
-                            <div className="flex items-center gap-3">
-                                <label className="relative w-8 h-8 rounded-lg border border-white/10 cursor-pointer overflow-hidden shrink-0" title="Border color">
-                                    <div className="w-full h-full" style={{ backgroundColor: borderColor }} />
-                                    <input type="color" value={borderColor} onChange={(e) => setBorderColor(e.target.value)} className="absolute inset-0 opacity-0 cursor-pointer" />
-                                </label>
-                                <div className="flex-1">
-                                    <input
-                                        type="range"
-                                        min="0"
-                                        max="5"
-                                        value={borderWidth}
-                                        onChange={(e) => setBorderWidth(parseInt(e.target.value))}
-                                        className="w-full accent-primary"
-                                    />
-                                    <div className="flex justify-between text-[10px] text-zinc-500">
-                                        <span>None</span>
-                                        <span>Thick</span>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-
-                        {/* Background Box */}
-                        <div>
-                            <div className="flex items-center justify-between mb-2">
-                                <label className="text-xs font-bold text-zinc-400 uppercase tracking-wider">Background Box</label>
-                                <label className="relative inline-flex items-center cursor-pointer">
-                                    <input type="checkbox" checked={bgOpacity > 0} onChange={(e) => setBgOpacity(e.target.checked ? 0.5 : 0)} className="sr-only peer" />
-                                    <div className="w-8 h-4 bg-zinc-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[0px] after:left-[0px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-primary"></div>
-                                </label>
-                            </div>
-                            {bgOpacity > 0 && (
-                                <div className="space-y-3 animate-[fadeIn_0.2s_ease-out]">
-                                    <div className="flex items-center gap-3">
-                                        <label className="relative w-8 h-8 rounded-lg border border-white/10 cursor-pointer overflow-hidden shrink-0" title="Background color">
-                                            <div className="w-full h-full" style={{ backgroundColor: bgColor }} />
-                                            <input type="color" value={bgColor} onChange={(e) => setBgColor(e.target.value)} className="absolute inset-0 opacity-0 cursor-pointer" />
-                                        </label>
-                                        <div className="flex-1">
-                                            <input
-                                                type="range"
-                                                min="10"
-                                                max="100"
-                                                value={Math.round(bgOpacity * 100)}
-                                                onChange={(e) => setBgOpacity(parseInt(e.target.value) / 100)}
-                                                className="w-full accent-primary"
-                                            />
-                                            <div className="flex justify-between text-[10px] text-zinc-500">
-                                                <span>Transparent</span>
-                                                <span>{Math.round(bgOpacity * 100)}%</span>
-                                            </div>
-                                        </div>
-                                    </div>
-                                </div>
+                                <span>Edit Text ({captions.length} words)</span>
+                                <span style={{ transition: 'transform 200ms', transform: showTextEditor ? 'rotate(180deg)' : 'none', color: 'var(--subtle)' }}>▾</span>
+                            </button>
+                            {showTextEditor && (
+                                <textarea
+                                    value={editableText}
+                                    onChange={(e) => handleTextEdit(e.target.value)}
+                                    rows={4}
+                                    className="os-input os-textarea"
+                                    placeholder="Edit subtitle text..."
+                                />
                             )}
+                        </div>
+                    )}
+
+                    <div>
+                        <label style={FIELD_LABEL}>Font</label>
+                        <select value={fontName} onChange={(e) => setFontName(e.target.value)} className="os-input os-select">
+                            {FONT_OPTIONS.map((f) => (
+                                <option key={f.value} value={f.value} style={{ fontFamily: f.value }}>{f.label}</option>
+                            ))}
+                        </select>
+                    </div>
+
+                    <div>
+                        <label style={FIELD_LABEL}>Text Color</label>
+                        <ColorSwatches value={fontColor} onChange={setFontColor} />
+                    </div>
+
+                    <div>
+                        <label style={FIELD_LABEL}>Highlight Color</label>
+                        <ColorSwatches
+                            value={highlightColor}
+                            onChange={setHighlightColor}
+                            presets={['#FFDD00', '#FF4444', '#00FF88', '#00BBFF', '#FF69B4']}
+                        />
+                    </div>
+
+                    <div>
+                        <label style={FIELD_LABEL}>Border</label>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            <label style={{ width: 32, height: 32, borderRadius: 6, border: '1px solid var(--border)', cursor: 'pointer', overflow: 'hidden', flexShrink: 0, position: 'relative' }} title="Border color">
+                                <div style={{ width: '100%', height: '100%', backgroundColor: borderColor }} />
+                                <input type="color" value={borderColor} onChange={(e) => setBorderColor(e.target.value)} style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }} aria-label="Border color" />
+                            </label>
+                            <div style={{ flex: 1 }}>
+                                <input
+                                    type="range"
+                                    min="0"
+                                    max="5"
+                                    value={borderWidth}
+                                    onChange={(e) => setBorderWidth(parseInt(e.target.value))}
+                                    style={{ width: '100%', accentColor: 'var(--primary)' }}
+                                    aria-label="Border width"
+                                />
+                                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.6875rem', color: 'var(--subtle)' }}>
+                                    <span>None</span>
+                                    <span>Thick</span>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
-                    <button
-                        onClick={() => onGenerate({
-                            position, fontSize, fontName, fontColor, borderColor, borderWidth, bgColor, bgOpacity,
-                            // Remotion data
-                            remotion: useRemotionPreview ? subtitleConfig : null,
-                        })}
-                        disabled={isProcessing}
-                        className="w-full py-3 mt-4 bg-gradient-to-r from-yellow-500 to-orange-500 hover:from-yellow-400 hover:to-orange-400 text-black font-bold rounded-xl shadow-lg shadow-orange-500/20 transition-all active:scale-[0.98] flex items-center justify-center gap-2 shrink-0"
-                    >
-                        {isProcessing ? <Loader2 size={20} className="animate-spin" /> : <Type size={20} />}
-                        {isProcessing ? 'Generating...' : 'Generate Subtitles'}
-                    </button>
+                    <div>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 6 }}>
+                            <label style={{ ...FIELD_LABEL, marginBottom: 0 }}>Background Box</label>
+                            <button
+                                type="button"
+                                className="os-toggle"
+                                role="switch"
+                                aria-checked={bgOpacity > 0}
+                                onClick={() => setBgOpacity(bgOpacity > 0 ? 0 : 0.5)}
+                            />
+                        </div>
+                        {bgOpacity > 0 && (
+                            <div className="os-fade-in" style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                                <label style={{ width: 32, height: 32, borderRadius: 6, border: '1px solid var(--border)', cursor: 'pointer', overflow: 'hidden', flexShrink: 0, position: 'relative' }} title="Background color">
+                                    <div style={{ width: '100%', height: '100%', backgroundColor: bgColor }} />
+                                    <input type="color" value={bgColor} onChange={(e) => setBgColor(e.target.value)} style={{ position: 'absolute', inset: 0, opacity: 0, cursor: 'pointer' }} aria-label="Background color" />
+                                </label>
+                                <div style={{ flex: 1 }}>
+                                    <input
+                                        type="range"
+                                        min="10"
+                                        max="100"
+                                        value={Math.round(bgOpacity * 100)}
+                                        onChange={(e) => setBgOpacity(parseInt(e.target.value) / 100)}
+                                        style={{ width: '100%', accentColor: 'var(--primary)' }}
+                                        aria-label="Background opacity"
+                                    />
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.6875rem', color: 'var(--subtle)' }}>
+                                        <span>Transparent</span>
+                                        <span>{Math.round(bgOpacity * 100)}%</span>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                    </div>
                 </div>
             </div>
-        </div>
+
+            <button
+                onClick={() => onGenerate({
+                    position, fontSize: FONT_SIZE, fontName, fontColor, borderColor, borderWidth, bgColor, bgOpacity,
+                    remotion: useRemotionPreview ? subtitleConfig : null,
+                })}
+                disabled={isProcessing}
+                className="os-btn os-btn-primary"
+                style={{ width: '100%', justifyContent: 'center', gap: 6, marginTop: '1rem' }}
+            >
+                {isProcessing ? <Loader2 size={14} className="animate-spin" /> : <Type size={14} />}
+                {isProcessing ? 'Generating...' : 'Generate Subtitles'}
+            </button>
+        </ModalShell>
     );
 }

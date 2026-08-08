@@ -1,3 +1,6 @@
+# OpenShorts Prompt v1.0.0 — 2026-06-29
+# File: clips_podcast.txt
+
 ## PODCAST CLIP SELECTION CRITERIA (Layered on top of Universal Rules)
 
 In podcast and talk-show content, clip selection should prioritize high-interest conversational hooks, hot takes, humor, and host/guest chemistry.

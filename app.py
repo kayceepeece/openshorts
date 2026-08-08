@@ -1418,6 +1418,62 @@ async def api_delete_video(video_id: str):
     delete_video(video_id)
     return {"status": "success"}
 
+@app.post("/api/videos/{video_id}/retry")
+async def api_retry_video(video_id: str, request: Request):
+    """Re-queue a failed video analysis using the source file already on disk."""
+    vid = get_video(video_id)
+    if not vid:
+        raise HTTPException(status_code=404, detail="Video not found")
+    if vid["status"] not in ("failed", "ready"):
+        raise HTTPException(status_code=400, detail=f"Video is not in a retryable state (status: {vid['status']})")
+
+    p = get_project(vid["project_id"])
+    if not p:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    api_key = request.headers.get("X-Gemini-Key")
+    if p["dossier_enabled"] and not api_key:
+        raise HTTPException(status_code=400, detail="Missing X-Gemini-Key header (required for dossier analysis)")
+    if not api_key:
+        api_key = os.environ.get("GEMINI_API_KEY", "")
+
+    vpath = get_video_file_path(video_id)
+    if not vpath or not os.path.exists(vpath):
+        raise HTTPException(status_code=404, detail="Source video file not found on disk")
+
+    video_output_dir = os.path.join(OUTPUT_DIR, video_id)
+    os.makedirs(video_output_dir, exist_ok=True)
+
+    # Rebuild the same analysis command used at upload time
+    cmd = ["python", "-u", "main.py", "--analyze"]
+    env = os.environ.copy()
+    env["GEMINI_API_KEY"] = api_key
+    cmd.extend(["-i", vpath])
+    cmd.extend(["-o", video_output_dir])
+    if p["dossier_enabled"]:
+        cmd.append("--dossier")
+    if p.get("content_type"):
+        cmd.extend(["--content-type", p["content_type"]])
+    if p.get("custom_instructions"):
+        cmd.extend(["--custom-prompt", p["custom_instructions"].strip()])
+
+    # Reset status so polling resumes
+    update_video(video_id, status='analyzing', error=None, completed_at=None)
+
+    # Enqueue Job (reuse same id so the frontend row keeps updating)
+    jobs[video_id] = {
+        'type': 'video_analysis',
+        'status': 'queued',
+        'logs': [f"Video analysis re-queued for {video_id}."],
+        'cmd': cmd,
+        'env': env,
+        'output_dir': video_output_dir,
+        'attestation': vid.get("source_type") or "file"
+    }
+
+    await job_queue.put(video_id)
+    return {"video_id": video_id, "status": "queued"}
+
 @app.put("/api/videos/{video_id}")
 async def api_update_video(video_id: str, req: VideoUpdate):
     vid = get_video(video_id)

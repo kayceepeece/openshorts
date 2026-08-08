@@ -241,6 +241,21 @@ export default function ProjectDetail({
         } catch { /* ignore network errors */ }
     };
 
+    const handleRetryVideo = async (videoId, e) => {
+        e.stopPropagation();
+        try {
+            const res = await fetch(getApiUrl(`/api/videos/${videoId}/retry`), {
+                method: 'POST',
+                headers: { 'X-Gemini-Key': geminiApiKey }
+            });
+            if (!res.ok) { const err = await res.json(); throw new Error(err.detail || 'Failed to retry'); }
+            setVideos(prev => prev.map(v => v.id === videoId ? { ...v, status: 'analyzing', error: null } : v));
+            startPollingVideo(videoId);
+        } catch (e) {
+            alert(e.message);
+        }
+    };
+
     const handleSelectVideo = (videoId, e) => {
         e.stopPropagation();
         setSelectedVideoIds(prev =>
@@ -554,6 +569,16 @@ export default function ProjectDetail({
                                                             </span>
                                                         )}
                                                     </div>
+                                                )}
+                                                {vid.status === 'failed' && (
+                                                    <button
+                                                        onClick={e => handleRetryVideo(vid.id, e)}
+                                                        className="os-btn os-btn-xs"
+                                                        style={{ padding: 5, gap: 4, display: 'flex', alignItems: 'center' }}
+                                                        title="Retry analysis with the existing source file"
+                                                    >
+                                                        <RefreshCw size={11} /> Retry
+                                                    </button>
                                                 )}
                                                 <button
                                                     onClick={e => handleDeleteVideo(vid.id, e)}

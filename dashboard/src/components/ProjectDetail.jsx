@@ -426,7 +426,7 @@ export default function ProjectDetail({
             )}
 
             {/* ── Main content area ── */}
-            <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0 }}>
+            <div style={{ flex: 1, display: 'flex', overflow: 'hidden', minHeight: 0, position: 'relative' }}>
 
                 {/* ── Left: primary workflow ── */}
                 <div className="os-scroll" style={{
@@ -727,13 +727,17 @@ export default function ProjectDetail({
                     </section>
                 </div>
 
-                {/* ── Right: Intelligence Viewer (slide-in panel) ── */}
+                {/* ── Right: Intelligence Viewer (overlay panel) ── */}
                 {viewerOpen && (
                     <div
                         className="os-fade-in"
                         style={{
-                            width: 380, flexShrink: 0,
+                            position: 'absolute',
+                            top: 0, right: 0, bottom: 0,
+                            width: 380, maxWidth: '90%',
+                            zIndex: 20,
                             borderLeft: '1px solid var(--border)',
+                            boxShadow: '-8px 0 24px oklch(0 0 0 / 0.08)',
                             background: 'var(--surface)',
                             display: 'flex', flexDirection: 'column',
                             overflow: 'hidden',

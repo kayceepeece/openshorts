@@ -638,7 +638,7 @@ const AIAgentView = () => (
 );
 
 /* ─── Projects View ─────────────────────────────────────────────────── */
-const ProjectsView = ({ projects, setCurrentProject, showNewProjectModal, setShowNewProjectModal, handleCreateProject, newProjectName, setNewProjectName, dossierEnabled, setDossierEnabled, retentionDays, setRetentionDays, newProjectContentType, setNewProjectContentType, newProjectInstructions, setNewProjectInstructions, handleDeleteProject }) => (
+const ProjectsView = ({ projects, projectsLoading, setCurrentProject, showNewProjectModal, setShowNewProjectModal, handleCreateProject, newProjectName, setNewProjectName, dossierEnabled, setDossierEnabled, retentionDays, setRetentionDays, newProjectContentType, setNewProjectContentType, newProjectInstructions, setNewProjectInstructions, handleDeleteProject }) => (
   <div className="os-fade-in os-scroll" style={{ height: '100%', overflowY: 'auto', padding: '1.5rem' }}>
     {/* Heading row */}
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
@@ -653,8 +653,13 @@ const ProjectsView = ({ projects, setCurrentProject, showNewProjectModal, setSho
       </button>
     </div>
 
-    {/* Grid or empty */}
-    {projects.length === 0 ? (
+    {/* Loading state (avoids flashing the empty state on slow fetches) */}
+    {projectsLoading ? (
+      <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 320, gap: 12, color: 'var(--subtle)' }}>
+        <div style={{ width: 20, height: 20, border: '2px solid var(--border-2)', borderTopColor: 'var(--primary)', borderRadius: '50%', animation: 'spin 0.6s linear infinite' }} />
+        <div style={{ fontSize: '0.8125rem', color: 'var(--muted)' }}>Loading projects...</div>
+      </div>
+    ) : projects.length === 0 ? (
       <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 320, gap: 12, color: 'var(--subtle)' }}>
         <LayoutDashboard size={36} style={{ color: 'var(--border-2)' }} />
         <div style={{ fontSize: '0.9375rem', fontWeight: 600, color: 'var(--muted)' }}>No projects yet</div>
@@ -902,6 +907,7 @@ function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
 
   const [projects, setProjects] = useState([]);
+  const [projectsLoading, setProjectsLoading] = useState(true);
   const [currentProject, setCurrentProject] = useState(null);
   const [showNewProjectModal, setShowNewProjectModal] = useState(false);
   const [newProjectName, setNewProjectName] = useState('');
@@ -912,6 +918,10 @@ function App() {
   const [sessionRecovered, setSessionRecovered] = useState(false);
   const [showScheduleWeek, setShowScheduleWeek] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.innerWidth < 768);
+
+  // Holds the saved project id from a previous session so we can restore it
+  // once projects load, without relying on localStorage after effects run.
+  const savedProjectIdRef = useRef(null);
 
   const [_syncedTime, setSyncedTime] = useState(0);
   const [_isSyncedPlaying, setIsSyncedPlaying] = useState(false);
@@ -925,25 +935,33 @@ function App() {
   }, []);
 
   const fetchProjects = async () => {
+    setProjectsLoading(true);
     try {
       const res = await fetch(getApiUrl('/api/projects'));
       if (res.ok) { const d = await res.json(); setProjects(d.projects || []); }
     } catch { /* ignore network errors */ }
+    finally { setProjectsLoading(false); }
   };
 
-  // Restore the last open project after projects load (refresh persistence)
+  // Snapshot the saved project id at mount, before any effect can wipe it.
+  useEffect(() => {
+    savedProjectIdRef.current = localStorage.getItem(PROJECT_KEY) || null;
+  }, []);
+
+  // Restore the last open project once projects load (refresh persistence).
+  // Uses the mount-time snapshot so the persist effect can't have removed it.
   useEffect(() => {
     if (projects.length === 0 || currentProject) return;
-    const savedId = localStorage.getItem(PROJECT_KEY);
+    const savedId = savedProjectIdRef.current;
     if (!savedId) return;
     const saved = projects.find(p => p.id === savedId);
     if (saved) setCurrentProject(saved);
   }, [projects, currentProject]);
 
-  // Persist the currently open project
+  // Persist the currently open project (only writes when non-null, so an
+  // in-progress restore is never clobbered on mount).
   useEffect(() => {
     if (currentProject?.id) localStorage.setItem(PROJECT_KEY, currentProject.id);
-    else localStorage.removeItem(PROJECT_KEY);
   }, [currentProject]);
 
   useEffect(() => { fetchProjects(); }, []);
@@ -978,7 +996,10 @@ function App() {
       const res = await fetch(getApiUrl(`/api/projects/${projectId}`), { method: 'DELETE' });
       if (res.ok) {
         setProjects(prev => prev.filter(p => p.id !== projectId));
-        if (currentProject?.id === projectId) setCurrentProject(null);
+        if (currentProject?.id === projectId) {
+          localStorage.removeItem(PROJECT_KEY);
+          setCurrentProject(null);
+        }
       }
     } catch { /* ignore network errors */ }
   };
@@ -1129,7 +1150,7 @@ function App() {
             currentProject ? (
               <ProjectDetail
                 project={currentProject}
-                onBack={() => { setCurrentProject(null); fetchProjects(); }}
+                onBack={() => { localStorage.removeItem(PROJECT_KEY); setCurrentProject(null); fetchProjects(); }}
                 geminiApiKey={apiKey}
                 uploadPostKey={uploadPostKey}
                 uploadUserId={uploadUserId}
@@ -1141,6 +1162,7 @@ function App() {
             ) : (
               <ProjectsView
                 projects={projects}
+                projectsLoading={projectsLoading}
                 setCurrentProject={setCurrentProject}
                 showNewProjectModal={showNewProjectModal}
                 setShowNewProjectModal={setShowNewProjectModal}

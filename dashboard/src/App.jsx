@@ -209,7 +209,11 @@ const Sidebar = ({ activeTab, setActiveTab, setCurrentProject, collapsed }) => (
             id={`nav-${id}`}
             onClick={() => {
               setActiveTab(id);
-              if (id === 'dashboard') setCurrentProject(null);
+              if (id === 'dashboard') {
+                savedProjectIdRef.current = null;
+                localStorage.removeItem(PROJECT_KEY);
+                setCurrentProject(null);
+              }
             }}
             className={`os-nav-item${isActive ? ' active' : ''}`}
             title={collapsed ? label : undefined}
@@ -949,19 +953,24 @@ function App() {
   }, []);
 
   // Restore the last open project once projects load (refresh persistence).
-  // Uses the mount-time snapshot so the persist effect can't have removed it.
+  // Uses the mount-time snapshot and clears it so back button/sidebar clicks stay on project list.
   useEffect(() => {
     if (projects.length === 0 || currentProject) return;
     const savedId = savedProjectIdRef.current;
     if (!savedId) return;
+    savedProjectIdRef.current = null;
     const saved = projects.find(p => p.id === savedId);
     if (saved) setCurrentProject(saved);
   }, [projects, currentProject]);
 
-  // Persist the currently open project (only writes when non-null, so an
-  // in-progress restore is never clobbered on mount).
+  // Persist the currently open project (clears storage and ref when currentProject is null)
   useEffect(() => {
-    if (currentProject?.id) localStorage.setItem(PROJECT_KEY, currentProject.id);
+    if (currentProject?.id) {
+      localStorage.setItem(PROJECT_KEY, currentProject.id);
+    } else {
+      localStorage.removeItem(PROJECT_KEY);
+      savedProjectIdRef.current = null;
+    }
   }, [currentProject]);
 
   useEffect(() => { fetchProjects(); }, []);
@@ -1150,7 +1159,7 @@ function App() {
             currentProject ? (
               <ProjectDetail
                 project={currentProject}
-                onBack={() => { localStorage.removeItem(PROJECT_KEY); setCurrentProject(null); fetchProjects(); }}
+                onBack={() => { savedProjectIdRef.current = null; localStorage.removeItem(PROJECT_KEY); setCurrentProject(null); fetchProjects(); }}
                 geminiApiKey={apiKey}
                 uploadPostKey={uploadPostKey}
                 uploadUserId={uploadUserId}

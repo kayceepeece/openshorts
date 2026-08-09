@@ -44,8 +44,27 @@ export default function ProjectDetail({
     const [isClipping, setIsClipping] = useState(false);
     const [customPrompt, setCustomPrompt] = useState('');
     const [avoidPrevious, setAvoidPrevious] = useState(true);
+    const [clipCount, setClipCount] = useState('auto');
+    const [durationMode, setDurationMode] = useState('auto');
+    const [customMinSec, setCustomMinSec] = useState(15);
+    const [customMaxSec, setCustomMaxSec] = useState(60);
     const [expandedClipJobId, setExpandedClipJobId] = useState(null);
     const [error, setError] = useState(null);
+
+    const getDurationBounds = () => {
+        switch (durationMode) {
+            case '15-30': return { min_duration: 15, max_duration: 30 };
+            case '30-45': return { min_duration: 30, max_duration: 45 };
+            case '45-60': return { min_duration: 45, max_duration: 60 };
+            case 'exact10': return { min_duration: 10, max_duration: 10 };
+            case 'exact15': return { min_duration: 15, max_duration: 15 };
+            case 'exact30': return { min_duration: 30, max_duration: 30 };
+            case 'custom': return { min_duration: Number(customMinSec) || 15, max_duration: Number(customMaxSec) || 60 };
+            case 'auto':
+            default:
+                return { min_duration: 15, max_duration: 60 };
+        }
+    };
 
     const [activeVideoJobs, setActiveVideoJobs] = useState({});
     const [activeClipJobs, setActiveClipJobs] = useState({});
@@ -210,10 +229,18 @@ export default function ProjectDetail({
         if (selectedVideoIds.length === 0) return;
         setIsClipping(true);
         try {
+            const bounds = getDurationBounds();
             const res = await fetch(getApiUrl(`/api/projects/${project.id}/clip`), {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Gemini-Key': geminiApiKey },
-                body: JSON.stringify({ video_ids: selectedVideoIds, detection_prompt: customPrompt, avoid_previous: avoidPrevious })
+                body: JSON.stringify({
+                    video_ids: selectedVideoIds,
+                    detection_prompt: customPrompt,
+                    avoid_previous: avoidPrevious,
+                    clip_count: clipCount === 'auto' ? null : Number(clipCount),
+                    min_duration: bounds.min_duration,
+                    max_duration: bounds.max_duration
+                })
             });
             if (!res.ok) { const err = await res.json(); throw new Error(err.detail || 'Failed to create clipping job'); }
             const result = await res.json();
@@ -546,6 +573,86 @@ export default function ProjectDetail({
                                     onClick={() => setAvoidPrevious(v => !v)}
                                     style={{ flexShrink: 0, marginLeft: 'auto' }}
                                 />
+                            </div>
+                        )}
+
+                        {/* Clip Count Selector — appears when videos are selected */}
+                        {selectedVideoIds.length > 0 && (
+                            <div className="os-panel-2" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10, padding: '0.625rem 0.75rem', marginBottom: '0.75rem' }}>
+                                <div style={{ minWidth: 0 }}>
+                                    <div style={{ fontSize: '0.8125rem', fontWeight: 500, color: 'var(--ink)' }}>Target Clip Count</div>
+                                    <div style={{ fontSize: '0.6875rem', color: 'var(--subtle)' }}>Specify how many viral clips to generate per video run.</div>
+                                </div>
+                                <select
+                                    value={clipCount}
+                                    onChange={e => setClipCount(e.target.value)}
+                                    className="os-input os-select"
+                                    style={{ width: 140, flexShrink: 0 }}
+                                    aria-label="Clip Count"
+                                >
+                                    <option value="auto">Auto (3–15)</option>
+                                    <option value="3">3 clips</option>
+                                    <option value="5">5 clips</option>
+                                    <option value="10">10 clips</option>
+                                    <option value="15">15 clips</option>
+                                </select>
+                            </div>
+                        )}
+
+                        {/* Target Clip Duration Selector — appears when videos are selected */}
+                        {selectedVideoIds.length > 0 && (
+                            <div className="os-panel-2" style={{ display: 'flex', flexDirection: 'column', gap: 8, padding: '0.625rem 0.75rem', marginBottom: '0.75rem' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 10 }}>
+                                    <div style={{ minWidth: 0 }}>
+                                        <div style={{ fontSize: '0.8125rem', fontWeight: 500, color: 'var(--ink)' }}>Target Clip Duration</div>
+                                        <div style={{ fontSize: '0.6875rem', color: 'var(--subtle)' }}>Set interval range, exact target time, or custom duration bounds.</div>
+                                    </div>
+                                    <select
+                                        value={durationMode}
+                                        onChange={e => setDurationMode(e.target.value)}
+                                        className="os-input os-select"
+                                        style={{ width: 160, flexShrink: 0 }}
+                                        aria-label="Clip Duration"
+                                    >
+                                        <option value="auto">Auto Range (15–60s)</option>
+                                        <option value="15-30">Short Range (15–30s)</option>
+                                        <option value="30-45">Medium Range (30–45s)</option>
+                                        <option value="45-60">Long Range (45–60s)</option>
+                                        <option value="exact10">Exact ~10s</option>
+                                        <option value="exact15">Exact ~15s</option>
+                                        <option value="exact30">Exact ~30s</option>
+                                        <option value="custom">Custom Range...</option>
+                                    </select>
+                                </div>
+
+                                {durationMode === 'custom' && (
+                                    <div style={{ display: 'flex', alignItems: 'center', gap: 12, paddingTop: 6, borderTop: '1px dashed var(--border-2)' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1 }}>
+                                            <span style={{ fontSize: '0.75rem', color: 'var(--muted)', whiteSpace: 'nowrap' }}>Min (sec):</span>
+                                            <input
+                                                type="number"
+                                                min={5}
+                                                max={180}
+                                                value={customMinSec}
+                                                onChange={e => setCustomMinSec(e.target.value)}
+                                                className="os-input"
+                                                style={{ width: 80, fontSize: '0.75rem' }}
+                                            />
+                                        </div>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1 }}>
+                                            <span style={{ fontSize: '0.75rem', color: 'var(--muted)', whiteSpace: 'nowrap' }}>Max (sec):</span>
+                                            <input
+                                                type="number"
+                                                min={5}
+                                                max={180}
+                                                value={customMaxSec}
+                                                onChange={e => setCustomMaxSec(e.target.value)}
+                                                className="os-input"
+                                                style={{ width: 80, fontSize: '0.75rem' }}
+                                            />
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         )}
 

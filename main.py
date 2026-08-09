@@ -22,7 +22,7 @@ load_dotenv()
 ASPECT_RATIO = 9 / 16
 
 # Load helper to build clipping prompt dynamically based on content type
-def get_clipping_prompt(input_data_section, user_detection_prompt="", content_type='general'):
+def get_clipping_prompt(input_data_section, user_detection_prompt="", content_type='general', clip_count=None, min_duration=15.0, max_duration=60.0):
     # Load universal rules
     general_rules = ""
     try:
@@ -57,13 +57,26 @@ You MUST:
 3. Ensure the start and end times you output align accurately with the events described in the dossier.
 """
 
-    prompt = f"""You are a senior short-form video editor. Read the ENTIRE transcript and visual dossier for the input video(s) to choose the 3–15 MOST VIRAL moments for TikTok/IG Reels/YouTube Shorts. Each clip must be between 15 and 60 seconds long.
+    if clip_count and int(clip_count) > 0:
+        target_clause = f"choose EXACTLY {int(clip_count)} of the MOST VIRAL moments (or up to {int(clip_count)} if the video duration is short)"
+    else:
+        target_clause = "choose the 3–15 MOST VIRAL moments"
+
+    min_d = float(min_duration) if min_duration is not None else 15.0
+    max_d = float(max_duration) if max_duration is not None else 60.0
+
+    if abs(min_d - max_d) < 0.1:
+        duration_clause = f"Each clip MUST be as close as possible to EXACTLY {min_d:.0f} seconds long (between {max(5.0, min_d - 2.0):.1f} and {max_d + 2.0:.1f} seconds)."
+    else:
+        duration_clause = f"Each clip MUST be between {min_d:.1f} and {max_d:.1f} seconds long (inclusive)."
+
+    prompt = f"""You are a senior short-form video editor. Read the ENTIRE transcript and visual dossier for the input video(s) to {target_clause} for TikTok/IG Reels/YouTube Shorts. {duration_clause}
 
 ⚠️ FFMPEG TIME CONTRACT — STRICT REQUIREMENTS:
 - Return timestamps in ABSOLUTE SECONDS from the start of the video (usable in: ffmpeg -ss <start> -to <end> -i <input> ...).
 - Only NUMBERS with decimal point, up to 3 decimals (examples: 0, 1.250, 17.350).
 - Ensure 0 ≤ start < end ≤ VIDEO_DURATION_SECONDS.
-- Each clip between 15 and 60 s (inclusive).
+- {duration_clause}
 - Prefer starting 0.2–0.4 s BEFORE the hook and ending 0.2–0.4 s AFTER the payoff.
 - Use silence moments for natural cuts; never cut in the middle of a word or phrase.
 - STRICTLY FORBIDDEN to use time formats other than absolute seconds.
@@ -80,7 +93,7 @@ You MUST:
 
 STRICT EXCLUSIONS:
 - No generic intros/outros or purely sponsorship segments unless they contain the hook.
-- No clips < 15 s or > 60 s.
+- No clips < {min_d:.1f} s or > {max_d:.1f} s.
 
 OUTPUT — RETURN ONLY VALID JSON (no markdown, no comments). Order clips by predicted performance (best to worst). Write descriptions that are natural to the content type and optimised for each platform:
 {{
@@ -1153,7 +1166,7 @@ def get_video_duration(video_path):
     cap.release()
     return duration
 
-def detect_clips_stage2(transcripts, dossiers, custom_prompt, api_key, content_type='general', used_moments=None):
+def detect_clips_stage2(transcripts, dossiers, custom_prompt, api_key, content_type='general', used_moments=None, clip_count=None, min_duration=15.0, max_duration=60.0):
     """Process each video as its own isolated Gemini API call.
 
     Each video = one upload + one clip-detection call. Multi-video jobs
@@ -1220,7 +1233,7 @@ def detect_clips_stage2(transcripts, dossiers, custom_prompt, api_key, content_t
         if estimated_tokens > TOKEN_WARN_THRESHOLD:
             print(f"   ⚠️  Large payload detected ({estimated_tokens:,} tokens > {TOKEN_WARN_THRESHOLD:,} threshold).")
 
-        prompt = get_clipping_prompt(input_data_section, user_detection_prompt=user_prompt_str, content_type=content_type)
+        prompt = get_clipping_prompt(input_data_section, user_detection_prompt=user_prompt_str, content_type=content_type, clip_count=clip_count, min_duration=min_duration, max_duration=max_duration)
         response = client.models.generate_content(model=model_name, contents=prompt)
 
         # Cost tracking
@@ -1366,6 +1379,9 @@ if __name__ == '__main__':
     parser.add_argument('--render-single', type=str, default="", help="Render one clip (JSON: {\"input\":path,\"start\":s,\"end\":e,\"output\":path}) then exit.")
     parser.add_argument('--custom-prompt', type=str, default="", help="Custom instructions/prompt for dossier generation in analyze mode.")
     parser.add_argument('--content-type', type=str, default="general", help="Domain/content type template to use (general, sports, podcast, lecture, gaming, interview).")
+    parser.add_argument('--clip-count', type=int, default=None, help="Target number of clips to extract per video (e.g. 3, 5, 10).")
+    parser.add_argument('--min-duration', type=float, default=15.0, help="Minimum clip duration in seconds.")
+    parser.add_argument('--max-duration', type=float, default=60.0, help="Maximum clip duration in seconds.")
     parser.add_argument('--keep-original', action='store_true', help="Keep downloaded YouTube video (legacy mode).")
     parser.add_argument('--skip-analysis', action='store_true', help="Skip AI analysis and convert whole video (legacy mode).")
     
@@ -1535,7 +1551,7 @@ if __name__ == '__main__':
             print("❌ Error: GEMINI_API_KEY not found in environment variables.")
             sys.exit(1)
             
-        clips_data = detect_clips_stage2(transcripts, dossiers, args.prompt, api_key, args.content_type, used_moments=used_moments)
+        clips_data = detect_clips_stage2(transcripts, dossiers, args.prompt, api_key, args.content_type, used_moments=used_moments, clip_count=args.clip_count, min_duration=args.min_duration, max_duration=args.max_duration)
         
         if not clips_data or 'shorts' not in clips_data:
             print("❌ Failed to identify clips.")

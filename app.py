@@ -1241,6 +1241,9 @@ class ClipJobCreate(BaseModel):
     video_ids: List[str]
     detection_prompt: Optional[str] = None
     avoid_previous: bool = True
+    clip_count: Optional[int] = Field(default=None, ge=1, le=30)
+    min_duration: Optional[float] = Field(default=15.0, ge=5.0, le=180.0)
+    max_duration: Optional[float] = Field(default=60.0, ge=5.0, le=180.0)
 
 class VideoUpdate(BaseModel):
     custom_instructions: Optional[str] = None
@@ -1602,6 +1605,13 @@ async def generate_clips(project_id: str, req: ClipJobCreate, request: Request):
 
     if p.get("content_type"):
         cmd.extend(["--content-type", p["content_type"]])
+
+    if req.clip_count:
+        cmd.extend(["--clip-count", str(req.clip_count)])
+    if req.min_duration is not None:
+        cmd.extend(["--min-duration", str(req.min_duration)])
+    if req.max_duration is not None:
+        cmd.extend(["--max-duration", str(req.max_duration)])
 
     # Collect previously-clipped moments per video so the new job avoids repeats
     if req.avoid_previous:

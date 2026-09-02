@@ -13,11 +13,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY requirements.txt .
 RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
-# Install PyTorch CPU-only first (smaller image: ~4.6 GB vs ~11 GB).
-# GPU users: docker compose build --build-arg TORCH_INDEX_URL=https://download.pytorch.org/whl/cu124
+# Install PyTorch CPU-only first (smaller image: ~2G vs ~7G for CUDA wheels).
+# The CPU wheels must be installed BEFORE requirements.txt so pip does not
+# re-resolve torch/torchvision from the default index (which pulls CUDA + nvidia libs).
 ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
 RUN pip install --upgrade pip
-RUN pip install --no-cache-dir --index-url ${TORCH_INDEX_URL} torch torchvision
+RUN pip install --no-cache-dir --index-url ${TORCH_INDEX_URL} torch==2.11.0 torchvision==0.26.0
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Point YOLO to pre-downloaded model (survives volume mount)

@@ -593,6 +593,8 @@ def analyze_scenes_layout(video_path, scenes, strategies):
       - INSET is a known strategy label but is produced by a webcam-inset
         detector this repo does not ship; the renderer still handles the
         label (as a presenter-over-content stack) if a sidecar names it.
+        No code path in this repo emits INSET today — the render branches
+        for it are reserved for a future detector, not live logic.
 
     Heuristic detectors run by default (their modules gate on SPLIT_LAYOUT /
     PANEL_LAYOUT / SCREENCAST_LAYOUT, all default-on). The Gemini
@@ -1506,6 +1508,10 @@ def get_video_duration(video_path):
     return duration
 
 def detect_clips_stage2(transcripts, dossiers, custom_prompt, api_key, content_type='general', used_moments=None, clip_count=None, min_duration=15.0, max_duration=60.0):
+    # PINNED FALLBACK — intentionally unreferenced. The windowed two-pass
+    # detector (detect_clips_windowed) is the live clip path; this older
+    # per-video detector is kept as a known-good rollback if the windowed
+    # path ever misbehaves. Do not delete; do not call without a reason.
     """Process each video as its own isolated Gemini API call.
 
     Each video = one upload + one clip-detection call. Multi-video jobs

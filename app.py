@@ -1887,7 +1887,7 @@ async def api_rerender_clip(clip_job_id: str, clip_index: int, req: RecutRequest
 
         loop = asyncio.get_event_loop()
         try:
-            served_name, _ = await loop.run_in_executor(
+            served_name, new_clean = await loop.run_in_executor(
                 None,
                 lambda: recut.perform_recut(
                     input_path=input_path, segments=cut_segments,
@@ -1905,9 +1905,46 @@ async def api_rerender_clip(clip_job_id: str, clip_index: int, req: RecutRequest
                       "canonical_range": canonical_range}
         new_start = min(s["start"] for s in segments)
         new_end = max(s["end"] for s in segments)
+        new_duration = recut.total_duration(segments)
         updates = {"video_url": new_video_url, "start": new_start,
                    "end": new_end, "recipe": new_recipe}
+
+        # Refresh layout ranges against the new file: the fast path remapped
+        # the canonical sidecar, the source path re-rendered it fresh. The
+        # stored ranges must describe the served cut, not the old one.
+        new_ranges = []
+        try:
+            import layout_ranges as _lr
+            new_ranges = _lr.read(os.path.join(output_dir, new_clean))
+            if new_ranges:
+                updates["layout_ranges"] = new_ranges
+        except Exception:
+            pass
+
+        drop_grounding = False
+        if not fast:
+            # Source path re-rendered new content: the old grounded hook was
+            # verified against frames this cut may no longer show. Re-ground
+            # when the new cut qualifies; otherwise drop the stale marker.
+            # Never fails the recut.
+            try:
+                import hook_grounding as _hg
+                new_file = os.path.join(output_dir, new_clean)
+                if new_ranges and _hg.wanted(new_ranges, new_duration):
+                    _hg.reground(new_file, clip, transcript,
+                                 new_start, new_end)
+                    updates["hook"] = clip.get("hook")
+                    updates["title"] = clip.get("title")
+                    updates["hook_grounding"] = clip.get("hook_grounding")
+                else:
+                    drop_grounding = True
+            except Exception as e:
+                print(f"   ⚠️ Hook re-grounding skipped after recut ({e})")
+                drop_grounding = True
+
         clip.update(updates)
+        if drop_grounding:
+            clip.pop("hook_grounding", None)
         data["shorts"] = clips
         _atomic_write_json(meta_path, data)
 
@@ -1916,6 +1953,8 @@ async def api_rerender_clip(clip_job_id: str, clip_index: int, req: RecutRequest
             mem_clips = mem_job["result"].get("clips") or []
             if clip_index < len(mem_clips):
                 mem_clips[clip_index].update(updates)
+                if drop_grounding:
+                    mem_clips[clip_index].pop("hook_grounding", None)
 
         return {
             "success": True,

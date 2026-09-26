@@ -6,10 +6,12 @@ Adaptations for OpenShorts:
 - Enabled by default: no PUNCH_IN env gate, no feature flag. If audio
   analysis fails for any reason, emphasis_times returns [] (graceful
   no-op) and the render is unchanged — it never crashes the render.
-- No ffmpeg sendcmd: the local render path (main.process_video_to_vertical)
-  crops numpy frames per frame, so callers compute a per-frame zoom array
-  with zoom_curve() and scale the SmoothFollower crop box with zoom_box()
-  before cropping.
+- Two render paths: the v1 loop (main._process_video_to_vertical_v1) crops
+  numpy frames per frame, so it computes a per-frame zoom array with
+  zoom_curve() and scales the crop box with zoom_box() before cropping.
+  The v2 engine (reframe_v2) renders natively in ffmpeg, so it turns the
+  same zoom array into per-frame (w, h, x, y) boxes with crop_boxes() and
+  emits them as deduped sendcmd_lines() for the crop filter.
 - Audio envelope is computed locally with ffmpeg (mono 8kHz RMS per window),
   same normalisation as upstream's active_speaker.audio_envelope, which this
   repo does not ship. numpy-only, no new dependencies.
@@ -127,6 +129,63 @@ def zoom_box(x1, y1, x2, y2, zoom, orig_w, orig_h):
     if nx2 <= nx1 or ny2 <= ny1:
         return x1, y1, x2, y2
     return nx1, ny1, nx2, ny2
+
+
+def crop_boxes(xs, zooms, crop_w, crop_h, orig_w, orig_h):
+    """Per-frame (w, h, x, y), zooming about the tracked crop's own centre.
+
+    Keeping the centre fixed is what makes this a push rather than a pan:
+    the subject stays put and the frame closes in around them.
+
+    ffmpeg-native form of zoom_box for the v2 engine (reframe_v2): the
+    TRACK path widens these boxes into sendcmd_lines() driving the crop
+    filter, instead of scaling one numpy box per frame.
+    """
+    boxes = []
+    for i, x in enumerate(xs):
+        z = zooms[i] if i < len(zooms) else 1.0
+        w = int(crop_w / z)
+        h = int(crop_h / z)
+        w -= w % 2
+        h -= h % 2
+        w = max(2, min(w, orig_w))
+        h = max(2, min(h, orig_h))
+
+        cx = x + crop_w / 2.0
+        cy = crop_h / 2.0
+        nx = int(round(cx - w / 2.0))
+        ny = int(round(cy - h / 2.0))
+        nx = max(0, min(nx, orig_w - w))
+        ny = max(0, min(ny, orig_h - h))
+        boxes.append((w, h, nx - (nx % 2), ny - (ny % 2)))
+    return boxes
+
+
+def sendcmd_lines(boxes, fps, target="crop@c"):
+    """sendcmd lines for per-frame w/h/x/y, deduped to change-points.
+
+    Same contract as reframe_v2.dedupe_sendcmd_lines, but four parameters: at
+    30fps a 45s clip is 1350 frames and writing every parameter every frame
+    makes a command file large enough to slow the filter down.
+    """
+    lines = []
+    prev = None
+    for i, box in enumerate(boxes):
+        if box == prev:
+            continue
+        t = i / fps
+        w, h, x, y = box
+        pw, ph, px, py = prev if prev else (None, None, None, None)
+        if w != pw:
+            lines.append(f"{t:.4f} {target} w {w};")
+        if h != ph:
+            lines.append(f"{t:.4f} {target} h {h};")
+        if x != px:
+            lines.append(f"{t:.4f} {target} x {x};")
+        if y != py:
+            lines.append(f"{t:.4f} {target} y {y};")
+        prev = box
+    return lines
 
 
 def _audio_envelope(video_path, duration, window=BEAT_WINDOW):

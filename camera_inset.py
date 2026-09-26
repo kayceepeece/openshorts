@@ -25,8 +25,8 @@ them with margin.
 #   None means "no usable inset here", which callers treat as "use another
 #   layout" rather than as an error — never a crash.
 # - blurred_backdrop() is inlined below (same filter chain as upstream
-#   ffmpeg_utils): this repo has no ffmpeg_utils.py, and camera_inset must
-#   import clean on its own.
+#   ffmpeg_utils): camera_inset must import clean on its own, without
+#   depending on the encoder-selection module.
 import os
 
 CORNER_MARGIN = 0.20   # a subject this far from an edge (as a fraction of the
@@ -74,8 +74,8 @@ def blurred_backdrop(out_w, out_h, sigma):
     The blur runs at a quarter of the output size and is scaled up afterwards:
     a blurred picture has no detail to lose, the result looks the same and the
     segment encode needs much less CPU. ``sigma`` is the full-size one.
-    (Same chain as upstream ffmpeg_utils.blurred_backdrop, inlined so this
-    module has no dependency on files this repo does not ship.)
+    (Same chain as ffmpeg_utils.blurred_backdrop, inlined so this
+    module has no dependency on the encoder-selection module.)
     """
     small_w = max(2, out_w // 4 - (out_w // 4) % 2)
     small_h = max(2, out_h // 4 - (out_h // 4) % 2)

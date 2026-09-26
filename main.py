@@ -1073,10 +1073,14 @@ def process_video_to_vertical(input_video, final_output_video, crop_overrides=No
     for s_start, s_end in scenes:
         scene_boundaries.append((s_start.get_frames(), s_end.get_frames()))
 
-    # Apply manual crop overrides: set cameraman centre for scenes
-    # the user positioned by hand. Runs on the source path (reframe)
-    # so the canonical file's framing can be overridden per scene.
-    # Unknown indices and malformed values are skipped silently.
+    # Manual crop overrides: scene index -> crop CENTRE as a fraction of the
+    # source width, for scenes the user framed by hand. Parsed once here;
+    # enforced per-frame in the loop below as a locked TRACK window (a manual
+    # choice beats the automatic strategy, including GENERAL blur). Runs on
+    # the source path (reframe) so the canonical file's framing can be
+    # overridden per scene. Unknown indices and malformed values are skipped
+    # silently — a stale editor tab must never fail the render.
+    manual_centres = {}
     if crop_overrides:
         try:
             for raw_idx, value in crop_overrides.items():
@@ -1091,15 +1095,13 @@ def process_video_to_vertical(input_video, final_output_video, crop_overrides=No
                         fraction = float(value.get("x", 0.5))
                     else:
                         fraction = float(value)
-                    x_center = max(0, min(int(round(fraction * original_width)), original_width))
-                    # Position the cameraman at the override for every
-                    # frame of this scene; it will snap on scene change.
-                    cameraman.current_center_x = x_center
-                    cameraman.target_center_x = x_center
                 except (TypeError, ValueError):
                     continue
+                manual_centres[idx] = max(0.0, min(1.0, fraction))
         except Exception:
             pass
+    if manual_centres:
+        print(f"   ✋ Manual framing on {len(manual_centres)} scene(s)")
 
     # Global tracker for single-person shots
     speaker_tracker = SpeakerTracker(cooldown_frames=30)
@@ -1121,7 +1123,48 @@ def process_video_to_vertical(input_video, final_output_video, crop_overrides=No
             current_plan = scene_plans[current_scene_index] if current_scene_index < len(scene_plans) else ('TRACK', None)
 
             # Apply Strategy
-            if current_strategy == 'SPLIT' and current_plan[1] is not None:
+            if current_scene_index in manual_centres:
+                # Hand-framed scene: locked TRACK window at the override
+                # centre, ignoring the face tracker and any multi-region
+                # layout plan. Never raises: fall back to the automatic path.
+                try:
+                    frac = manual_centres[current_scene_index]
+                    cw = cameraman.crop_width
+                    if cw >= original_width:
+                        x1, x2 = 0, original_width
+                    else:
+                        max_x = original_width - cw
+                        xc = frac * original_width
+                        xc = max(cw / 2, min(original_width - cw / 2, xc))
+                        x1 = int(round(xc - cw / 2))
+                        x1 = max(0, min(x1, max_x))
+                        x2 = x1 + cw
+                    cameraman.current_center_x = x1 + (x2 - x1) / 2
+                    cameraman.target_center_x = cameraman.current_center_x
+                    y1, y2 = 0, original_height
+                    if _punch_zooms and frame_number < len(_punch_zooms):
+                        x1, y1, x2, y2 = punch_in.zoom_box(
+                            x1, y1, x2, y2, _punch_zooms[frame_number],
+                            original_width, original_height)
+                    if y2 > y1 and x2 > x1:
+                        cropped = frame[y1:y2, x1:x2]
+                        output_frame = cv2.resize(cropped, (OUTPUT_WIDTH, OUTPUT_HEIGHT))
+                    else:
+                        output_frame = cv2.resize(frame, (OUTPUT_WIDTH, OUTPUT_HEIGHT))
+                except Exception as e:
+                    print(f"   ⚠️ Manual crop failed on scene {current_scene_index} ({e}) — using auto framing.")
+                    manual_centres.pop(current_scene_index, None)
+                    candidates = detect_face_candidates(frame)
+                    target_box = speaker_tracker.get_target(candidates, frame_number, original_width)
+                    if target_box:
+                        cameraman.update_target(target_box)
+                    x1, y1, x2, y2 = cameraman.get_crop_box(force_snap=False)
+                    if y2 > y1 and x2 > x1:
+                        cropped = frame[y1:y2, x1:x2]
+                        output_frame = cv2.resize(cropped, (OUTPUT_WIDTH, OUTPUT_HEIGHT))
+                    else:
+                        output_frame = cv2.resize(frame, (OUTPUT_WIDTH, OUTPUT_HEIGHT))
+            elif current_strategy == 'SPLIT' and current_plan[1] is not None:
                 # Two speakers stacked one above the other (split filtergraph geometry)
                 top_box, bot_box = current_plan[1]
                 half_h = top_box[4]
@@ -1264,6 +1307,8 @@ def process_video_to_vertical(input_video, final_output_video, crop_overrides=No
             s = max(0, s_f) / layout_fps
             e = min(e_f, frame_number) / layout_fps
             strategy = scene_strategies[i] if i < len(scene_strategies) else 'TRACK'
+            if i in manual_centres:
+                strategy = 'TRACK'  # hand-framed scenes render as locked TRACK
             if e > s:
                 layout_list.append((s, e, strategy))
         layout_ranges.write(final_output_video, layout_list)

@@ -27,7 +27,6 @@ export default function RecutModal({ isOpen, onClose, jobId, clipIndex, videoUrl
     const [sourceHeight, setSourceHeight] = useState(0);
     const [cropWidthFrac, setCropWidthFrac] = useState(0.5625); // 9:16 default
     const [savedOverrides, setSavedOverrides] = useState({});
-    const [cropNudging, setCropNudging] = useState(false);
 
     const videoRef = useRef(null);
 
@@ -102,7 +101,16 @@ export default function RecutModal({ isOpen, onClose, jobId, clipIndex, videoUrl
 
     const removeSegment = (i) => setSegments((segs) => segs.filter((_, j) => j !== i));
 
-    // Crop nudge helpers
+    // Crop nudge helpers — overrides are {x, y} fractions of the source
+    // width/height (or bare x fractions from older saves). Unset scenes
+    // start from the face-suggested centre, so the common case is a nudge.
+    const overrideXY = (sceneIdx, fallbackX, fallbackY) => {
+        const ov = savedOverrides[sceneIdx];
+        if (ov == null) return { x: fallbackX ?? 0.5, y: fallbackY ?? 0.5, manual: false };
+        if (typeof ov === 'number') return { x: ov, y: 0.5, manual: true };
+        return { x: ov.x ?? 0.5, y: ov.y ?? 0.5, manual: true };
+    };
+
     const getOverride = (sceneIdx) => {
         return savedOverrides[sceneIdx] || null;
     };
@@ -119,11 +127,21 @@ export default function RecutModal({ isOpen, onClose, jobId, clipIndex, videoUrl
     };
 
     const nudgeScene = (sceneIdx, dir) => {
-        const ov = getOverride(sceneIdx);
-        const frac = ov || 0.5;
+        const scene = scenes[sceneIdx] || {};
+        const { x, y } = overrideXY(sceneIdx, scene.suggested_center, scene.suggested_center_y);
         const step = 0.02;
-        let newFrac = dir === 'left' ? Math.max(0, frac - step) : Math.min(1, frac + step);
-        setOverride(sceneIdx, { x: Math.round(newFrac * 10000) / 10000, y: 0.5 });
+        let nx = x, ny = y;
+        if (dir === 'left') nx = Math.max(0, x - step);
+        else if (dir === 'right') nx = Math.min(1, x + step);
+        else if (dir === 'up') ny = Math.max(0, y - step);
+        else if (dir === 'down') ny = Math.min(1, y + step);
+        setOverride(sceneIdx, { x: Math.round(nx * 10000) / 10000, y: Math.round(ny * 10000) / 10000 });
+    };
+
+    const slideScene = (sceneIdx, nx) => {
+        const scene = scenes[sceneIdx] || {};
+        const { y } = overrideXY(sceneIdx, scene.suggested_center, scene.suggested_center_y);
+        setOverride(sceneIdx, { x: Math.round(nx * 10000) / 10000, y: Math.round(y * 10000) / 10000 });
     };
 
     const handleSaveFrame = async () => {
@@ -315,9 +333,8 @@ export default function RecutModal({ isOpen, onClose, jobId, clipIndex, videoUrl
                             {/* Scene list */}
                             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
                                 {scenes.map((scene, idx) => {
-                                    const ov = getOverride(idx);
-                                    const cx = ov ? ov.x : (scene.suggested_center || 0.5);
-                                    const cy = ov ? ov.y : (scene.suggested_center_y || 0.5);
+                                    const { x: cx, y: cy, manual } = overrideXY(idx, scene.suggested_center, scene.suggested_center_y);
+                                    const thumbSrc = scene.thumbnail_url ? getApiUrl(scene.thumbnail_url) : null;
                                     return (
                                         <div key={idx} className="os-panel-2" style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '0.625rem 0.75rem' }}>
                                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -327,7 +344,7 @@ export default function RecutModal({ isOpen, onClose, jobId, clipIndex, videoUrl
                                                         {scene.start.toFixed(1)}–{scene.end.toFixed(1)}s
                                                     </span>
                                                 </span>
-                                                {ov ? (
+                                                {manual ? (
                                                     <button onClick={() => setOverride(idx, null)}
                                                         style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'var(--subtle)', fontSize: '0.6875rem' }}>
                                                         Reset
@@ -337,8 +354,8 @@ export default function RecutModal({ isOpen, onClose, jobId, clipIndex, videoUrl
 
                                             {/* Mini preview area */}
                                             <div style={{ position: 'relative', background: '#1a1a2e', borderRadius: 6, overflow: 'hidden', aspectRatio: '9/16', maxHeight: 120 }}>
-                                                {scene.thumbnail_url ? (
-                                                    <img src={scene.thumbnail_url} alt={`Scene ${idx + 1}`}
+                                                {thumbSrc ? (
+                                                    <img src={thumbSrc} alt={`Scene ${idx + 1}`}
                                                         style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
                                                 ) : (
                                                     <div style={{ width: '100%', height: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--subtle)', fontSize: '0.75rem' }}>
@@ -381,6 +398,10 @@ export default function RecutModal({ isOpen, onClose, jobId, clipIndex, videoUrl
                                                     <ArrowRight size={14} />
                                                 </button>
                                             </div>
+                                            {/* Fine slider: drag the crop centre across the source width */}
+                                            <input type="range" min={0} max={1} step={0.01} value={cx}
+                                                onChange={(e) => slideScene(idx, parseFloat(e.target.value))}
+                                                style={{ width: '100%' }} aria-label={`Scene ${idx + 1} crop centre`} />
                                         </div>
                                     );
                                 })}

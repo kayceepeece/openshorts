@@ -1915,6 +1915,9 @@ async def api_rerender_clip(clip_job_id: str, clip_index: int, req: RecutRequest
         new_duration = recut.total_duration(segments)
         updates = {"video_url": new_video_url, "start": new_start,
                    "end": new_end, "recipe": new_recipe}
+        # A new cut re-indexes scenes, so stale per-scene framing would land
+        # on the wrong shots — clear it (upstream clears crop_overrides on
+        # rerender for the same reason).
 
         # Refresh layout ranges against the new file: the fast path remapped
         # the canonical sidecar, the source path re-rendered it fresh. The
@@ -1952,6 +1955,7 @@ async def api_rerender_clip(clip_job_id: str, clip_index: int, req: RecutRequest
         clip.update(updates)
         if drop_grounding:
             clip.pop("hook_grounding", None)
+        clip.pop("crop_overrides", None)
         data["shorts"] = clips
         _atomic_write_json(meta_path, data)
 
@@ -1962,6 +1966,7 @@ async def api_rerender_clip(clip_job_id: str, clip_index: int, req: RecutRequest
                 mem_clips[clip_index].update(updates)
                 if drop_grounding:
                     mem_clips[clip_index].pop("hook_grounding", None)
+                mem_clips[clip_index].pop("crop_overrides", None)
 
         return {
             "success": True,
@@ -2224,7 +2229,9 @@ async def api_reframe_clip(clip_job_id: str, clip_index: int, req: ReframeReques
         try:
             loop = asyncio.get_event_loop()
             served_name, _clean = await loop.run_in_executor(None, run)
-        except RuntimeError as e:
+        except Exception as e:
+            # Reframe must never crash the job: surface render failures as
+            # a 500 on this request, leaving the current clip untouched.
             raise HTTPException(status_code=500, detail=str(e))
 
         new_video_url = f"/videos/{clip_job_id}/{served_name}"

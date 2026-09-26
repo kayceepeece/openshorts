@@ -23,6 +23,10 @@ import panel_layout
 # Punch-in emphasis zooms (item 6): audio-envelope push-ins on the TRACK path.
 import punch_in
 
+# Hook grounding (item 7): rewrite hook/title from on-screen frames for
+# screen-content clips. Never raises; a hook failure keeps the transcript hook.
+import hook_grounding
+
 # Windowed clip-selection helpers (ported from upstream): word-snapping,
 # scoring windows, overlap dedupe, score-based trimming. Stdlib-only.
 from clip_selection import (
@@ -2196,14 +2200,38 @@ if __name__ == '__main__':
             
             # Process vertical
             success = process_video_to_vertical(clip_temp_path, clip_final_path)
-            
+
+            # Which stretches used which layout (sidecar -> clip metadata, so
+            # /api/subtitle finds it after the sidecar is gone). The hook was
+            # written from the transcript alone: when the render put this
+            # clip's meaning on the screen, rewrite hook and title from its
+            # frames before the metadata below is served to the dashboard.
+            clip['layout_ranges'] = layout_ranges.read(clip_final_path)
+            if success:
+                try:
+                    if hook_grounding.wanted(clip['layout_ranges'], end - start):
+                        src_transcript = (transcripts[video_idx]
+                                          if 0 <= video_idx < len(transcripts)
+                                          else clips_data.get('transcript'))
+                        hook_grounding.reground(clip_final_path, clip,
+                                                src_transcript, start, end)
+                except Exception as e:
+                    print(f"   ⚠️ Hook grounding skipped ({e})")
+
             if success:
                 print(f"   ✅ Clip {i+1} ready: {clip_final_path}")
-            
+
             # Clean up temp cut
             if os.path.exists(clip_temp_path):
                 os.remove(clip_temp_path)
-                
+
+        # Persist regrounded hooks (and layout ranges) back to the metadata
+        # file: app.py run_job builds the dashboard result from this file.
+        if any('hook_grounding' in c for c in clips_data['shorts']):
+            with open(metadata_file, 'w') as f:
+                json.dump(clips_data, f, indent=2)
+            print("   🪝 Saved regrounded hooks to metadata.")
+
         print("✅ Clip mode finished.")
         sys.exit(0)
 
@@ -2294,13 +2322,32 @@ if __name__ == '__main__':
                     
                     # Process vertical
                     success = process_video_to_vertical(clip_temp_path, clip_final_path)
-                    
+
+                    # Same hook-grounding pass as clip mode above: record the
+                    # layout ranges, then rewrite hook/title from frames when
+                    # the clip's meaning is on the screen.
+                    clip['layout_ranges'] = layout_ranges.read(clip_final_path)
+                    if success:
+                        try:
+                            if hook_grounding.wanted(clip['layout_ranges'], end - start):
+                                hook_grounding.reground(clip_final_path, clip,
+                                                        transcript, start, end)
+                        except Exception as e:
+                            print(f"   ⚠️ Hook grounding skipped ({e})")
+
                     if success:
                         print(f"   ✅ Clip {i+1} ready: {clip_final_path}")
-                    
+
                     # Clean up temp cut
                     if os.path.exists(clip_temp_path):
                         os.remove(clip_temp_path)
+
+                # Persist regrounded hooks (and layout ranges) back to the
+                # metadata file the dashboard reads.
+                if any('hook_grounding' in c for c in clips_data['shorts']):
+                    with open(metadata_file, 'w') as f:
+                        json.dump(clips_data, f, indent=2)
+                    print("   🪝 Saved regrounded hooks to metadata.")
 
         # Clean up original if requested
         if args.url and not args.keep_original and os.path.exists(input_video):

@@ -1791,8 +1791,308 @@ def detect_clips_stage2(transcripts, dossiers, custom_prompt, api_key, content_t
     }
 
 
+# ============================================================================
+# Gemini selection robustness: policy-block bisection + sparse-speech fallback
+# ----------------------------------------------------------------------------
+# Two failure modes used to cost whole jobs in this stage. Neither is a flag:
+# both are always on, both fail soft, and neither can raise out of the stage —
+# losing a clip is recoverable, losing the job is not.
+#
+# 1. A POLICY BLOCK on one window cost every window around it. The detail pass
+#    sent a video's whole shortlist in one prompt, so one blocked window took
+#    the video with it and the job came back "no clips"; the scoring pass
+#    scored a blocked batch as 0, which quietly dropped those windows from the
+#    shortlist instead. A block is deterministic for a given prompt (verified
+#    in prod: a stand-up video came back PROHIBITED_CONTENT in ~300ms on every
+#    attempt, and BLOCK_NONE does not lift it), so re-sending the batch cannot
+#    help — splitting it can. Google's filter also fires on COMBINATIONS of
+#    windows that pass on their own, which is why _bisect_on_block halves the
+#    batch instead of shrinking it: only the halves that still block recurse.
+#
+# 2. Footage with too little speech to clip by transcript (a nursery rhyme, a
+#    dashcam drive, music over ambience, a wordless screencast) built one thin
+#    scoring window, Gemini returned no clips from it, and the job died on "no
+#    clips detected". The signal in that footage is visual, so the vision path
+#    watches it and picks moments from the imagery.
+# ============================================================================
+
+# Every Gemini call in this stage goes through this one model. Its price is the
+# intro rate (thru 31 Dec 2026, doubling 1 Jan 2027) and is kept beside the
+# name so a future swap cannot leave the cost report quoting the wrong table.
+CLIP_SELECTION_MODEL = 'gemini-3.8-flash'
+CLIP_SELECTION_PRICE_PER_MILLION = (0.75, 3.75)   # (input, output)
+
+
+class GeminiBlockedError(ValueError):
+    """The API refused the request for content-policy reasons.
+
+    Deterministic for a given prompt, so callers must split or drop the
+    offending item — never retry it — and must never surface it as "the model
+    found no good moments here", which is what an unexamined block looks like.
+    """
+
+
+_BLOCKED_FINISH_REASONS = {"SAFETY", "PROHIBITED_CONTENT", "BLOCKLIST",
+                           "SPII", "IMAGE_SAFETY", "RECITATION"}
+
+
+def raise_if_blocked(response):
+    """Raise GeminiBlockedError when Gemini refused to answer on policy grounds.
+
+    A block is not an error: the SDK returns HTTP 200 with no text and a
+    finish reason, so every caller below used to read it as "nothing worth
+    clipping here" and return an empty result. That is how one blocked window
+    came to look like a whole video with no viral moments in it.
+    """
+    pf = getattr(response, "prompt_feedback", None)
+    reason = getattr(pf, "block_reason", None)
+    if reason:
+        name = getattr(reason, "name", None) or str(reason)
+        raise GeminiBlockedError(
+            f"Gemini blocked this video's content ({name}). The AI provider's "
+            "usage policies reject this material, so it can't be analyzed.")
+    for c in (getattr(response, "candidates", None) or []):
+        fr = getattr(c, "finish_reason", None)
+        name = (getattr(fr, "name", None) or str(fr or "")).upper()
+        if name in _BLOCKED_FINISH_REASONS:
+            raise GeminiBlockedError(
+                f"Gemini blocked its answer for this video ({name}). The AI "
+                "provider's usage policies reject this material, so it can't be analyzed.")
+
+
+def _bisect_on_block(items, run, label, merge=None, describe=None, empty=None):
+    """Run ``run`` over ``items``; on a policy block, bisect and retry the halves.
+
+    Splits in half rather than dropping one item, because the filter rejects
+    some COMBINATIONS of windows that are fine on their own — bisecting is the
+    only way to keep the innocent windows around an offending one. A single
+    item that still blocks alone is dropped with a log line: one unusable
+    window must never cost the job. ``merge`` joins the halves' results (list
+    concatenation by default, dict update for the scoring pass). ``empty`` is
+    what a dropped item contributes to the join — it must match ``merge``'s
+    container type (a [] joined into the scoring pass's dicts crashes it).
+    """
+    if empty is None:
+        empty = {} if merge is not None else []
+    items = list(items or [])
+    if not items:
+        return empty
+    try:
+        return run(items)
+    except GeminiBlockedError as e:
+        if len(items) == 1:
+            who = describe(items[0]) if describe else "this item"
+            print(f"   🚫 {label}: Gemini blocked {who} on its own — dropping it ({e})")
+            return empty
+        mid = len(items) // 2
+        print(f"   🚫 {label}: Gemini blocked a batch of {len(items)} — retrying as "
+              f"{mid} + {len(items) - mid}")
+        join = merge or (lambda a, b: list(a) + list(b))
+        return join(_bisect_on_block(items[:mid], run, label, merge, describe, empty),
+                    _bisect_on_block(items[mid:], run, label, merge, describe, empty))
+
+
+def _clean_json_text(text):
+    """Strip the markdown fences a model wraps its JSON answer in."""
+    text = (text or "").strip()
+    if text.startswith("```json"):
+        text = text[7:]
+    if text.startswith("```"):
+        text = text[3:]
+    if text.endswith("```"):
+        text = text[:-3]
+    return text.strip()
+
+
+# --- Speech too sparse to clip by transcript -------------------------------
+# Ordinary speech is 120-160 words/min, so anything under these floors has no
+# words to be a signal. A nursery-rhyme video or a dashcam drive has an audio
+# track, so it transcribes to one thin segment ("Uh uh"), builds one scoring
+# window and returns no clips — quiet footage that competitors simply skip.
+# These are constants, not env gates: a fallback that costs an upload when it
+# guesses wrong is cheaper than the jobs it rescues.
+MIN_SPEECH_WORDS = 8
+MIN_SPEECH_WORDS_PER_MIN = 5.0
+
+
+def speech_is_sparse(transcript, duration):
+    """True when the transcript is too thin to drive clip selection."""
+    words = sum(len((seg.get("text") or "").split())
+                for seg in (transcript or {}).get("segments", []))
+    minutes = max(float(duration or 0) / 60.0, 1e-6)
+    return words < MIN_SPEECH_WORDS or words / minutes < MIN_SPEECH_WORDS_PER_MIN
+
+
+VISUAL_CLIP_PROMPT = """
+You are a senior short-form video editor. This {content_type} footage has almost no
+usable speech, so judge it purely by what you SEE. Watch the whole thing and pick
+the {min_clips}–{max_clips} MOST engaging visual moments for TikTok / Reels / Shorts:
+action, reveals, transformations, striking or funny shots, satisfying payoffs,
+dramatic movement, or a scene change worth cutting on. If the footage is a screen
+recording, judge the on-screen demonstrations instead.
+
+TIME CONTRACT — STRICT:
+- Timestamps in ABSOLUTE SECONDS from the start (usable with ffmpeg -ss/-to).
+- Only numbers with up to 3 decimals (examples: 0, 12.5, 47.250).
+- 0 <= start < end <= {video_duration}.
+- Each clip {min_secs:g} to {max_secs:g} seconds long. If the whole video is shorter
+  than {min_secs:g}s, return one clip spanning the full video.
+- Cut on visual scene changes, never mid-motion.
+
+For each clip, write the copy in {language}: a scroll-stopping hook, a TikTok and
+an Instagram description (1-2 punchy sentences plus 3-5 hashtags), a YouTube title
+of at most 100 characters, and an honest 0-12 estimate of its viral potential.
+Name the concrete thing that happens on screen — never a summary of the video's
+general topic. Order clips best to worst by how likely they are to stop a viewer
+scrolling.
+
+Return ONLY valid JSON (no markdown, no comments), following the field names and
+the 0-12 score range of the transcript-driven pass exactly:
+{{
+  "shorts": [
+    {{
+      "start": <number in seconds>,
+      "end": <number in seconds>,
+      "predicted_score": <0-12>,
+      "video_description_for_tiktok": "<description + hashtags>",
+      "video_description_for_instagram": "<description + hashtags>",
+      "video_title_for_youtube_short": "<title, 100 chars max>",
+      "viral_hook_text": "<overlay text, max 10 words, in {language}>"
+    }}
+  ]
+}}
+"""
+
+
+def _upload_video_for_vision(client, path, timeout=300):
+    """Upload a local video to the Files API and wait for it to go ACTIVE.
+
+    Uploaded by open handle, never by path: handed a path the SDK copies the
+    basename into the X-Goog-Upload-File-Name header, and httpx encodes header
+    values as ASCII, so a download named after a non-Latin title died before a
+    byte left the container. The readable name still travels as ``display_name``
+    in the JSON body, which is UTF-8 all the way.
+
+    Returns the file handle, or None — never raises, because a video that
+    cannot be watched is a video with no clips, not a failed job.
+    """
+    import mimetypes
+    guessed = mimetypes.guess_type(path)[0] or ""
+    # Every caller uploads a source video; an extension the stdlib does not
+    # know must not reach the API as a type it refuses.
+    if not guessed.startswith(("video/", "audio/", "image/")):
+        guessed = "video/mp4"
+    with open(path, "rb") as fh:
+        file_upload = client.files.upload(
+            file=fh,
+            config={"mime_type": guessed, "display_name": os.path.basename(path)})
+    deadline = time.time() + timeout
+    while True:
+        info = client.files.get(name=file_upload.name)
+        state = str(getattr(getattr(info, "state", info), "name", "") or "").upper()
+        if state == "ACTIVE":
+            return file_upload
+        if state == "FAILED":
+            print("   ❌ Gemini could not process the video.")
+            return None
+        if time.time() > deadline:
+            print("   ❌ Gemini video processing timed out.")
+            return None
+        time.sleep(2)
+
+
+def get_visual_clips(video_path, video_duration, api_key, language="en",
+                     content_type='general', min_duration=15.0, max_duration=60.0,
+                     clip_count=None, exclusion_block=""):
+    """Clip a video with too little speech by WATCHING it (Gemini vision).
+
+    Returns ``{"shorts": [...], "usage": usage_metadata}`` in the same shape
+    the transcript detail pass produces, so the caller folds the result into the
+    same list and the same cost report, or None on any failure at all.
+
+    Boundaries come from the model watching frames, so they are NOT snapped to
+    word timestamps here: there are no words to snap to, and the handful this
+    video has would drag a correct visual cut onto a stray syllable.
+    """
+    if not video_path or not os.path.exists(video_path):
+        print(f"   ⚠️ Visual clip picking skipped: no readable file at '{video_path}'.")
+        return None
+
+    # A transcript saved without a duration (or a hand-made one) would clamp
+    # every proposed clip to 0s and drop the lot; the file knows the truth.
+    try:
+        video_duration = float(video_duration or 0.0) or get_video_duration(video_path)
+    except (TypeError, ValueError):
+        video_duration = 0.0
+    if video_duration <= 0:
+        print("   ⚠️ Visual clip picking skipped: unknown video duration.")
+        return None
+
+    min_secs = max(5.0, float(min_duration or 15.0))
+    max_secs = max(min_secs + 5.0, min(180.0, float(max_duration or 60.0)))
+    # The vision pass has no scoring windows to derive a count from, so an
+    # explicit request applies as-is; otherwise ask for the classic band.
+    if clip_count and int(clip_count) > 0:
+        v_min_clips = v_max_clips = int(clip_count)
+    else:
+        v_min_clips, v_max_clips = 3, 10
+
+    client = genai.Client(api_key=api_key)
+    print(f"👀 No speech to clip by — watching {os.path.basename(video_path)} "
+          f"with {CLIP_SELECTION_MODEL} instead...")
+    file_upload = None
+    try:
+        print("   📤 Uploading video to Gemini File API...")
+        file_upload = _upload_video_for_vision(client, video_path)
+        if file_upload is None:
+            return None
+        print("   ⏳ Video processed — looking for visual moments...")
+        prompt = VISUAL_CLIP_PROMPT.format(
+            content_type=content_type, language=language,
+            video_duration=video_duration, min_clips=v_min_clips,
+            max_clips=v_max_clips, min_secs=min_secs, max_secs=max_secs)
+        if exclusion_block:
+            prompt = prompt + "\n" + exclusion_block + "\n"
+        response = client.models.generate_content(
+            model=CLIP_SELECTION_MODEL, contents=[file_upload, prompt])
+        usage = getattr(response, 'usage_metadata', None)
+        # A whole-video block is a verdict on the footage, not a window that
+        # bisecting could isolate: drop it with the real reason rather than
+        # uploading and asking again.
+        raise_if_blocked(response)
+        shorts = json.loads(_clean_json_text(response.text)).get("shorts") or []
+        clean = []
+        for clip in shorts:
+            try:
+                start = max(0.0, float(clip.get("start", 0.0)))
+                end = min(video_duration, float(clip.get("end", 0.0)))
+            except (TypeError, ValueError, AttributeError):
+                continue
+            if end - start < 1.0:
+                continue
+            clip["start"], clip["end"] = round(start, 3), round(end, 3)
+            clean.append(clip)
+        if not clean:
+            print("   ⚠️ Vision pass returned no usable clips.")
+            return None
+        return {"shorts": clean, "usage": usage}
+    except GeminiBlockedError as e:
+        print(f"   🚫 {e}")
+        return None
+    except Exception as e:
+        print(f"   ❌ Gemini vision error: {type(e).__name__}: {e}")
+        return None
+    finally:
+        if file_upload is not None:
+            try:
+                client.files.delete(name=file_upload.name)
+            except Exception:
+                pass
+
+
 def detect_clips_windowed(transcripts, dossiers, custom_prompt, api_key, content_type='general',
-                          used_moments=None, clip_count=None, min_duration=15.0, max_duration=60.0):
+                          used_moments=None, clip_count=None, min_duration=15.0, max_duration=60.0,
+                          videos=None):
     """Windowed two-pass clip detection (the default clip path).
 
     Pass 1 — score: split each video into ~90s transcript windows aligned to
@@ -1802,15 +2102,23 @@ def detect_clips_windowed(transcripts, dossiers, custom_prompt, api_key, content
     Pass 2 — detail: run the standard clip prompt over the shortlisted windows
     only (words + dossier + exclusions), then snap/dedupe/trim.
     Videos with <=3 windows skip pass 1 and go straight to detail.
+
+    Both passes bisect their batch on a policy block (see _bisect_on_block),
+    and a video with too little speech to clip by words, or one whose windows
+    all came back blocked, falls back to Gemini-vision clip picking. That
+    fallback watches the footage in ``videos[video_index]``, so pass the source
+    paths to get it; without them the stage behaves as it did before.
     """
     from itertools import zip_longest
 
     print(f"🪟 Windowed clip detection ({len(transcripts)} video(s), 3.8-flash both passes)...")
     client = genai.Client(api_key=api_key)
-    model_name = 'gemini-3.8-flash'
+    model_name = CLIP_SELECTION_MODEL
     used_moments = list(used_moments or [])  # None-safe: exclusion helpers iterate this
-    INPUT_PRICE_PER_MILLION  = 0.75
-    OUTPUT_PRICE_PER_MILLION = 3.75
+    INPUT_PRICE_PER_MILLION, OUTPUT_PRICE_PER_MILLION = CLIP_SELECTION_PRICE_PER_MILLION
+    video_paths = list(videos or [])
+    visual_tried = set()   # one vision pass per video, however many chances
+    exhausted = set()      # every window already clipped in an earlier job
 
     try:
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
@@ -1845,18 +2153,11 @@ def detect_clips_windowed(transcripts, dossiers, custom_prompt, api_key, content
             pass
         return 0, 0
 
-    def _clean_json(text):
-        text = (text or "").strip()
-        if text.startswith("```json"):
-            text = text[7:]
-        if text.startswith("```"):
-            text = text[3:]
-        if text.endswith("```"):
-            text = text[:-3]
-        return text.strip()
-
     def _score_batch(batch):
-        """Score one batch of windows. Returns {window_id: (score, why)}."""
+        """Score one batch of windows. Returns {window_id: (score, why)}.
+
+        A policy block propagates so the caller can bisect the batch; any other
+        failure stays soft and scores the batch 0, as it always has."""
         lines = [f"{w['id']} [{w['start']:.1f}-{w['end']:.1f}]: {w['text']}" for w in batch]
         prompt = scoring_tmpl.format(content_type=content_type,
                                      n_windows=len(batch),
@@ -1864,7 +2165,8 @@ def detect_clips_windowed(transcripts, dossiers, custom_prompt, api_key, content
         try:
             response = client.models.generate_content(model=model_name, contents=prompt)
             _track_cost(getattr(response, 'usage_metadata', None))
-            data = json.loads(_clean_json(response.text))
+            raise_if_blocked(response)
+            data = json.loads(_clean_json_text(response.text))
             items = data.get("scores", data) if isinstance(data, dict) else data
             out = {}
             for item in items or []:
@@ -1874,6 +2176,8 @@ def detect_clips_windowed(transcripts, dossiers, custom_prompt, api_key, content
                 except (TypeError, ValueError, AttributeError):
                     continue
             return out
+        except GeminiBlockedError:
+            raise
         except Exception as e:
             print(f"   ⚠️ Scoring batch failed ({e}) — those windows score 0")
             return {}
@@ -1911,7 +2215,8 @@ def detect_clips_windowed(transcripts, dossiers, custom_prompt, api_key, content
         response = client.models.generate_content(model=model_name, contents=prompt)
         pi, po = _track_cost(getattr(response, 'usage_metadata', None))
         print(f"   💰 Detail call: {pi:,} in / {po:,} out → ${(pi/1_000_000)*INPUT_PRICE_PER_MILLION + (po/1_000_000)*OUTPUT_PRICE_PER_MILLION:.6f}")
-        data = json.loads(_clean_json(response.text))
+        raise_if_blocked(response)
+        data = json.loads(_clean_json_text(response.text))
         shorts = data.get("shorts", [])
         for clip in shorts:
             clip["video_index"] = video_index
@@ -1921,10 +2226,61 @@ def detect_clips_windowed(transcripts, dossiers, custom_prompt, api_key, content
             clip['start'], clip['end'] = s, e
         return shorts
 
+    def _detail_call_bisected(video_index, window_entries, words, duration, dossier,
+                              extra_exclusions=None):
+        """_detail_call, but a blocked shortlist is split instead of lost.
+
+        This is the call that used to take a whole video with it: the prompt
+        carried every shortlisted window at once, so one blocked window dropped
+        every other candidate in the video with it. Bisecting keeps the
+        innocent windows and costs at most a few extra calls."""
+        label = f"detail(video {video_index + 1})"
+        return _bisect_on_block(
+            window_entries,
+            lambda entries: _detail_call(video_index, entries, words, duration,
+                                         dossier, extra_exclusions=extra_exclusions),
+            label, describe=lambda entry: f"window {entry[0].get('id')}")
+
     def _video_words(trans):
         w = [{'w': wd.get('word', ''), 's': wd.get('start', 0.0), 'e': wd.get('end', 0.0)}
              for seg in trans.get('segments', []) for wd in seg.get('words', [])]
         return compact_words(w)
+
+    def _finish(shorts, n_candidates):
+        """Dedupe and cap one video's clips, whichever pass produced them."""
+        shorts = dedupe_overlapping(shorts)
+        _lo_n, hi_n = clip_count_targets(max(1, int(n_candidates or 1)))
+        cap = int(clip_count) if clip_count and int(clip_count) > 0 else hi_n
+        return trim_to_best(shorts, cap)
+
+    def _visual_fallback(video_index, duration, trans):
+        """Watch this video's footage instead of clipping it by its words.
+
+        Returns its clips, or [] — never raises, and never runs twice for the
+        same video, and never for one whose moments are all already clipped."""
+        if video_index in visual_tried or video_index in exhausted:
+            return []
+        path = video_paths[video_index] if video_index < len(video_paths) else None
+        if not path:
+            return []
+        visual_tried.add(video_index)
+        print(f"   🔇 Nothing to clip by words in video {video_index + 1} — "
+              f"looking for visual moments instead.")
+        result = get_visual_clips(
+            path, duration, api_key,
+            language=str((trans or {}).get("language") or "en"),
+            content_type=content_type, min_duration=min_duration,
+            max_duration=max_duration, clip_count=clip_count,
+            exclusion_block=build_used_moments_block(video_index, used_moments) or "")
+        if not result:
+            print(f"   ⚠️ No clips from the footage of video {video_index + 1} either.")
+            return []
+        shorts = result.get("shorts") or []
+        for clip in shorts:
+            clip["video_index"] = video_index
+        pi, po = _track_cost(result.get("usage"))
+        print(f"   💰 Vision pass: {pi:,} in / {po:,} out")
+        return _finish(shorts, len(shorts))
 
     all_shorts   = []
     rejected     = []
@@ -1934,7 +2290,23 @@ def detect_clips_windowed(transcripts, dossiers, custom_prompt, api_key, content
         if trans == "":
             continue
         duration = float(trans.get('duration_seconds', 0.0) or 0.0)
+        # A transcript saved without a duration would divide by ~0 and read as
+        # dense speech; the file itself knows the truth.
+        if duration <= 0 and video_index < len(video_paths):
+            duration = get_video_duration(video_paths[video_index])
         words = _video_words(trans)
+
+        # Too little speech to clip by: scoring a handful of stray words used
+        # to return no clips and end the job. The footage is the signal here.
+        if speech_is_sparse(trans, duration):
+            print(f"\n📹 Video {video_index + 1}/{len(transcripts)}: "
+                  f"{sum(len((sg.get('text') or '').split()) for sg in trans.get('segments', []))} "
+                  f"word(s) in {duration:.0f}s")
+            visual = _visual_fallback(video_index, duration, trans)
+            if visual:
+                print(f"   ✅ {len(visual)} clip(s) after dedupe/trim")
+                all_shorts.extend(visual)
+            continue
 
         windows = build_transcript_windows(trans, duration)
         # Drop windows fully inside already-used moments — no need to score them
@@ -1943,6 +2315,10 @@ def detect_clips_windowed(transcripts, dossiers, custom_prompt, api_key, content
             windows = [w for w in windows
                        if not any(u['start'] - 1.0 <= w['start'] and w['end'] <= u['end'] + 1.0
                                   for u in my_used)]
+            # Every window of this video is already clipped: watching the
+            # footage cannot produce a moment that is not already taken.
+            if not windows:
+                exhausted.add(video_index)
 
         print(f"\n📹 Video {video_index + 1}/{len(transcripts)}: {len(windows)} window(s)")
 
@@ -1952,7 +2328,13 @@ def detect_clips_windowed(transcripts, dossiers, custom_prompt, api_key, content
             scores = {}
             for batch in score_batches(windows, 10):
                 print(f"   🔍 Scoring {len(batch)} window(s)...")
-                scores.update(_score_batch(batch))
+                # A blocked batch is bisected, not written off: scored 0 it
+                # would fall out of the shortlist, and a block is a verdict on
+                # one COMBINATION of windows, not on each of them.
+                scores.update(_bisect_on_block(
+                    batch, _score_batch, "score",
+                    merge=lambda a, b: {**a, **b},
+                    describe=lambda w: f"window {w.get('id')}"))
             ranked = sorted(windows, key=lambda w: (-scores.get(w['id'], (0.0, ""))[0], w['start']))
             short = sorted(ranked[:shortlist_target(duration)], key=lambda w: w['start'])
             entries = [(w, scores.get(w['id'], (0.0, ""))[0],
@@ -1961,19 +2343,42 @@ def detect_clips_windowed(transcripts, dossiers, custom_prompt, api_key, content
         video_entries[video_index] = (entries, words, duration, doss)
 
         if not entries:
-            print("   ⚠️ No windows to detail — skipping video")
+            print("   ⚠️ No windows to detail — trying the footage instead")
+            visual = _visual_fallback(video_index, duration, trans)
+            if visual:
+                print(f"   ✅ {len(visual)} clip(s) after dedupe/trim")
+                all_shorts.extend(visual)
             continue
         try:
-            shorts = _detail_call(video_index, entries, words, duration, doss)
+            shorts = _detail_call_bisected(video_index, entries, words, duration, doss)
         except Exception as e:
             print(f"   ❌ Detail call failed on video {video_index + 1}: {e}")
-            continue
-        shorts = dedupe_overlapping(shorts)
-        _lo_n, hi_n = clip_count_targets(len(entries))
-        cap = int(clip_count) if clip_count and int(clip_count) > 0 else hi_n
-        shorts = trim_to_best(shorts, cap)
-        print(f"   ✅ {len(shorts)} clip(s) after dedupe/trim")
-        all_shorts.extend(shorts)
+            shorts = []
+        if not shorts:
+            # Every window blocked, or the call answered with nothing. The one
+            # second opinion left is the footage itself, so the video is not
+            # lost with them.
+            shorts = _visual_fallback(video_index, duration, trans)
+        if shorts:
+            shorts = _finish(shorts, len(entries))
+            print(f"   ✅ {len(shorts)} clip(s) after dedupe/trim")
+            all_shorts.extend(shorts)
+
+    # Nothing at all came back: give every video still unvisited one look with
+    # the eyes rather than ending the job on a transcript that had nothing in
+    # it. Videos that already had their vision pass are skipped, and the
+    # exclusion filter below still applies to anything recovered here.
+    if not all_shorts:
+        for video_index, trans in enumerate(transcripts):
+            if not isinstance(trans, dict) or video_index in visual_tried:
+                continue
+            recovered = _visual_fallback(
+                video_index, float(trans.get('duration_seconds', 0.0) or 0.0), trans)
+            if recovered:
+                print(f"   ♻️ Recovered {len(recovered)} clip(s) from video {video_index + 1}.")
+                all_shorts.extend(recovered)
+        if all_shorts:
+            print(f"✅ Recovered {len(all_shorts)} clip(s) by watching the footage.")
 
     # ── Overlap post-filter + auto-repair against previously-clipped moments ──
     if used_moments:
@@ -2006,8 +2411,8 @@ def detect_clips_windowed(transcripts, dossiers, custom_prompt, api_key, content
                     continue
                 entries, words, duration, doss = video_entries[vi]
                 try:
-                    reps = _detail_call(vi, entries, words, duration, doss,
-                                        extra_exclusions=need_repair[vi])
+                    reps = _detail_call_bisected(vi, entries, words, duration, doss,
+                                                 extra_exclusions=need_repair[vi])
                     for clip in reps:
                         s, e = clip.get('start', 0.0), clip.get('end', 0.0)
                         ranges = [(u['start'], u['end']) for u in used_moments
@@ -2237,7 +2642,9 @@ if __name__ == '__main__':
             print("❌ Error: GEMINI_API_KEY not found in environment variables.")
             sys.exit(1)
             
-        clips_data = detect_clips_windowed(transcripts, dossiers, args.prompt, api_key, args.content_type, used_moments=used_moments, clip_count=args.clip_count, min_duration=args.min_duration, max_duration=args.max_duration)
+        # videos= lets the stage fall back to watching the footage when a
+        # transcript is too thin to clip by (see detect_clips_windowed).
+        clips_data = detect_clips_windowed(transcripts, dossiers, args.prompt, api_key, args.content_type, used_moments=used_moments, clip_count=args.clip_count, min_duration=args.min_duration, max_duration=args.max_duration, videos=args.input)
         
         if not clips_data or 'shorts' not in clips_data:
             print("❌ Failed to identify clips.")

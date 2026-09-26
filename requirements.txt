@@ -5,6 +5,10 @@ torchvision==0.26.0
 tqdm==4.67.3
 yt-dlp
 faster-whisper==1.2.1
+# Optional faster transcription backend (TRANSCRIBE_BACKEND=parakeet):
+# onnx-asr provides the NVIDIA Parakeet ONNX model, py3langid its language ID.
+onnx-asr==0.12.0
+py3langid==0.4.0
 google-genai==1.75.0
 python-dotenv==1.2.2
 boto3==1.43.4

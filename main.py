@@ -20,6 +20,9 @@ import split_layout
 import screencast_layout
 import panel_layout
 
+# Punch-in emphasis zooms (item 6): audio-envelope push-ins on the TRACK path.
+import punch_in
+
 # Windowed clip-selection helpers (ported from upstream): word-snapping,
 # scoring windows, overlap dedupe, score-based trimming. Stdlib-only.
 from clip_selection import (
@@ -1036,7 +1039,24 @@ def process_video_to_vertical(input_video, final_output_video):
 
     cap = cv2.VideoCapture(input_video)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-    
+
+    # Punch-in zooms (TRACK path only): audio-envelope emphasis beats for
+    # the whole clip, as a per-frame zoom array on the clip timeline
+    # starting at 0. Multi-region layouts (SPLIT/PANEL/SCREENCAST/WIDE)
+    # skip it in the frame loop below. Any failure degrades to no
+    # punches — it never fails the render.
+    try:
+        _punch_fps = float(fps) or 30.0
+        _clip_duration = total_frames / _punch_fps if _punch_fps > 0 else 0.0
+        _punch_beats = punch_in.emphasis_times(input_video, _clip_duration)
+        _punch_zooms = punch_in.zoom_curve(total_frames, _punch_fps,
+                                            _punch_beats)
+        if _punch_beats:
+            print(f"   🔍 Punch-in on {len(_punch_beats)} beat(s)")
+    except Exception as e:
+        print(f"   ⚠️ Punch-in disabled ({e})")
+        _punch_zooms = []
+
     frame_number = 0
     current_scene_index = 0
     
@@ -1137,7 +1157,16 @@ def process_video_to_vertical(input_video, final_output_video):
                 is_scene_start = (frame_number == scene_boundaries[current_scene_index][0])
                 
                 x1, y1, x2, y2 = cameraman.get_crop_box(force_snap=is_scene_start)
-                
+
+                # Punch-in: push toward the subject on emphasis beats by
+                # scaling the tracked crop box about its centre. Other
+                # layouts (SPLIT/PANEL/SCREENCAST/WIDE/GENERAL above) skip
+                # this — zooming a composed grid makes no sense.
+                if _punch_zooms and frame_number < len(_punch_zooms):
+                    x1, y1, x2, y2 = punch_in.zoom_box(
+                        x1, y1, x2, y2, _punch_zooms[frame_number],
+                        original_width, original_height)
+
                 # Crop
                 if y2 > y1 and x2 > x1:
                     cropped = frame[y1:y2, x1:x2]

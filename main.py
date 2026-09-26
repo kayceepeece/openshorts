@@ -262,6 +262,18 @@ class SmoothedCameraman:
         # As long as the target is within this zone relative to current center, DO NOT MOVE.
         self.safe_zone_radius = self.crop_width * 0.25
 
+    def begin_scene(self):
+        """Forget the previous shot's subject at a scene cut.
+
+        v2-analysis helper (reframe_v2 only — the v1 loop never calls this).
+        Recentres the camera so the new shot starts from the middle of the
+        frame instead of panning over from wherever the last shot left it;
+        the fresh detection on the cut frame then sets the real target and
+        the scene-start snap cuts straight to it.
+        """
+        self.current_center_x = self.video_width / 2
+        self.target_center_x = self.video_width / 2
+
     def update_target(self, face_box):
         """
         Updates the target center based on detected face/person.
@@ -339,6 +351,21 @@ class SpeakerTracker:
         # ID tracking
         self.next_id = 0
         self.known_faces = [] # [{'id': 0, 'center': x, 'last_frame': 123}]
+
+    def reset(self):
+        """Forget every speaker at a scene cut.
+
+        v2-analysis helper (reframe_v2 only — the v1 loop never calls this).
+        Identity, hysteresis and the switch cooldown are all about continuity
+        within a shot. After a cut none of it applies: the sticky x3 bonus
+        and the cooldown would hold the previous shot's speaker while a new
+        face sits unframed.
+        """
+        self.active_speaker_id = None
+        self.speaker_scores = {}
+        self.last_seen = {}
+        self.locked_counter = 0
+        self.last_switch_frame = -1000
 
     def get_target(self, face_candidates, frame_number, width):
         """
@@ -1003,6 +1030,40 @@ Technical Details: {str(e)}
     return downloaded_file, sanitized_title
 
 def process_video_to_vertical(input_video, final_output_video, crop_overrides=None):
+    """Reframe a clip to 9:16 via the v2 native-ffmpeg engine (reframe_v2).
+
+    Same contract as before: ``crop_overrides`` maps scene index -> crop
+    centre fraction (or {"x": f, "y": f}) for hand-framed scenes; the CUT is
+    never touched; a layout sidecar is written next to the output.
+
+    Safety: any failure in the new path falls back to the v1 OpenCV frame
+    loop below instead of failing the render — a new feature must never
+    crash a clip job. No runtime feature flags: one engine ships.
+    """
+    try:
+        import reframe_v2  # lazy: keeps transcribe-only runs light
+        t0 = time.time()
+        ok = reframe_v2.render(input_video, final_output_video, ASPECT_RATIO,
+                               crop_overrides=crop_overrides)
+        print(f"   ⏱️ Reframe v2 total: {time.time() - t0:.1f}s")
+        if ok and os.path.exists(final_output_video):
+            return ok
+        raise RuntimeError("v2 render produced no output file")
+    except Exception as e:
+        print(f"   ⚠️ Reframe v2 failed ({type(e).__name__}: {e}) — "
+              f"falling back to v1 frame loop")
+    return _process_video_to_vertical_v1(
+        input_video, final_output_video, crop_overrides=crop_overrides)
+
+
+def _process_video_to_vertical_v1(input_video, final_output_video, crop_overrides=None):
+    """UNUSED FALLBACK — v1 OpenCV render loop (kept, not deleted).
+
+    Superseded by process_video_to_vertical (v2 native-ffmpeg engine) after
+    side-by-side verification. Kept in this file so a v2 failure can never
+    crash a clip job: the wrapper above falls back here. Do not extend —
+    fixes go in reframe_v2.py.
+    """
     """
     Core logic to convert horizontal video to vertical using scene detection and Active Speaker Tracking (MediaPipe).
     ``crop_overrides`` maps scene index -> crop centre fraction (or {"x": f, "y": f})

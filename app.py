@@ -9,7 +9,7 @@ import time
 import asyncio
 import sqlite3
 from dotenv import load_dotenv
-from typing import Dict, Optional, List
+from typing import Any, Dict, Optional, List
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Header, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,6 +17,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 from s3_uploader import upload_job_artifacts, list_all_clips, upload_actor_to_s3, list_actor_gallery, upload_video_to_gallery, list_video_gallery
+import recut
 
 load_dotenv()
 
@@ -650,6 +651,12 @@ thumbnail_sessions: Dict[str, Dict] = {}
 publish_jobs: Dict[str, Dict] = {}  # {publish_id: {status, result, error}}
 # Semester to limit concurrency to MAX_CONCURRENT_JOBS
 concurrency_semaphore = asyncio.Semaphore(MAX_CONCURRENT_JOBS)
+# One lock per job (same pattern as _restore_locks): rerenders on the same job
+# share metadata.json and the canonical files, so they must not interleave.
+_rerender_locks: Dict[str, asyncio.Lock] = {}
+# Scene-listing builds write stable preview/thumbnail names per job; serialize
+# them so overlapping editor opens don't tear each other's files.
+_scenes_locks: Dict[str, asyncio.Lock] = {}
 
 def _relocate_root_job_artifacts(job_id: str, job_output_dir: str) -> bool:
     """
@@ -1966,6 +1973,296 @@ async def api_rerender_clip(clip_job_id: str, clip_index: int, req: RecutRequest
         }
 
 
+def _locate_source(job_id: str):
+    """Find a job's source video on disk, or None."""
+    matches = [
+        f for f in glob.glob(os.path.join(UPLOAD_DIR, f"{glob.escape(job_id)}_*"))
+        if not os.path.basename(f).startswith("thumb_")
+    ]
+    if matches:
+        return matches[0]
+    try:
+        meta_files = glob.glob(os.path.join(OUTPUT_DIR, job_id, "*_metadata.json"))
+        if meta_files:
+            with open(meta_files[0], 'r') as f:
+                name = json.load(f).get('source_video')
+            if name:
+                candidate = os.path.join(OUTPUT_DIR, job_id, os.path.basename(name))
+                if os.path.exists(candidate):
+                    return candidate
+    except Exception:
+        pass
+    return None
+
+
+def _ensure_job_files(job_id: str) -> bool:
+    """Make sure the job's metadata file exists on disk."""
+    job_dir = os.path.join(OUTPUT_DIR, job_id)
+    return bool(glob.glob(os.path.join(job_dir, "*_metadata.json")))
+
+
+def _assert_job_owner(request, record):
+    """Simplified owner check — local mode has no auth enforcement."""
+    pass
+
+
+# --- Manual reframe endpoints ---
+
+class ReframeCrop(BaseModel):
+    x: float
+    y: float = 0.5
+
+class ReframeRequest(BaseModel):
+    clip_index: int
+    crop_overrides: Dict[str, Any] = {}
+    reapply_captions: bool = True
+
+
+@app.get("/api/clip-jobs/{clip_job_id}/clips/{clip_index}/scenes")
+async def api_get_clip_scenes(clip_job_id: str, clip_index: int, request: Request):
+    """Scenes of a clip, each with a source frame to frame it against.
+
+    The frames come from the uncropped cut, not the delivered clip:
+    the point is to show what the automatic crop threw away.
+    """
+    if not _ensure_job_files(clip_job_id):
+        raise HTTPException(status_code=404, detail="Job metadata not found")
+    if clip_job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    output_dir = os.path.join(OUTPUT_DIR, clip_job_id)
+    json_files = glob.glob(os.path.join(output_dir, "*_metadata.json"))
+    if not json_files:
+        raise HTTPException(status_code=404, detail="Metadata not found")
+    with open(json_files[0], 'r') as f:
+        data = json.load(f)
+
+    clips = data.get('shorts', [])
+    if not 0 <= clip_index < len(clips):
+        raise HTTPException(status_code=404, detail="Clip not found")
+
+    if data.get('output_format') == 'horizontal':
+        raise HTTPException(
+            status_code=400,
+            detail="Horizontal clips keep the full frame; there is no crop to reframe.")
+
+    clip = clips[clip_index]
+    segments, _canonical_range = _clip_recipe_parts(clip)
+    saved_overrides = clip.get('crop_overrides') or {}
+    source_path = _locate_source(clip_job_id)
+    if not source_path:
+        raise HTTPException(
+            status_code=409,
+            detail="The source video is no longer on the server, so the "
+                   "framing of this clip can no longer be changed.")
+
+    def build():
+        import cv2
+        import main as m
+
+        token = str(clip_index)
+        work_token = f"{clip_index}_{uuid.uuid4().hex[:8]}"
+        preview_name = f"temp_preview_{clip_index}.mp4"
+        preview_path = os.path.join(output_dir, preview_name)
+        work_path = os.path.join(output_dir, f"scenes_{work_token}.mp4")
+        try:
+            recut.run_cut_concat(source_path, segments, work_path, output_dir)
+            scenes, fps = m.detect_scenes(work_path)
+            fps = float(fps) or 30.0
+            orig_w, orig_h = m.get_video_resolution(work_path)
+
+            cap = cv2.VideoCapture(work_path)
+            if not scenes:
+                total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT)) or 1
+                bounds = [(0, total)]
+            else:
+                bounds = [(s.get_frames(), e.get_frames()) for s, e in scenes]
+
+            out = []
+            for idx, (start_f, end_f) in enumerate(bounds):
+                mid = (start_f + end_f) // 2
+                cap.set(cv2.CAP_PROP_POS_FRAMES, mid)
+                ok, frame = cap.read()
+                thumb_name = None
+                suggested = 0.5
+                suggested_y = 0.5
+                if ok:
+                    thumb_name = f"temp_scene_{token}_{idx:03d}.jpg"
+                    cv2.imwrite(os.path.join(output_dir, thumb_name), frame,
+                                [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                    try:
+                        faces = m.detect_face_candidates(frame)
+                        if faces:
+                            box = max(faces,
+                                      key=lambda f: f['box'][2] * f['box'][3])['box']
+                            suggested = min(1.0, max(0.0,
+                                                     (box[0] + box[2] / 2) / orig_w))
+                            suggested_y = min(1.0, max(0.0,
+                                                       (box[1] + box[3] / 2) / orig_h))
+                    except Exception:
+                        pass
+                out.append({
+                    "index": idx,
+                    "start": round(start_f / fps, 3),
+                    "end": round(end_f / fps, 3),
+                    "thumbnail_url": (f"/videos/{clip_job_id}/{thumb_name}"
+                                      if thumb_name else None),
+                    "suggested_center": round(suggested, 4),
+                    "suggested_center_y": round(suggested_y, 4),
+                })
+            cap.release()
+            return orig_w, orig_h, out, preview_name
+        finally:
+            try:
+                if os.path.exists(work_path):
+                    subprocess.run(
+                        ["ffmpeg", "-y", "-loglevel", "error", "-i", work_path,
+                         "-vf", "scale=640:-2", "-c:v", "libx264", "-preset",
+                         "veryfast", "-crf", "30", "-c:a", "aac", "-b:a", "96k",
+                         "-movflags", "+faststart",
+                         preview_path], check=True, timeout=600)
+            except Exception as exc:
+                print(f"Scene preview failed: {exc}")
+            finally:
+                if os.path.exists(work_path):
+                    os.remove(work_path)
+
+    lock = _scenes_locks.setdefault(clip_job_id, asyncio.Lock())
+    async with lock:
+        try:
+            loop = asyncio.get_event_loop()
+            orig_w, orig_h, scenes_out, preview_name = await loop.run_in_executor(None, build)
+        except Exception as e:
+            print(f"Scene listing error: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    aspect = 1.0 if data.get('output_format') == 'square' else 9.0 / 16.0
+    crop_w = min(orig_w, orig_h * aspect)
+    return {
+        "job_id": clip_job_id,
+        "clip_index": clip_index,
+        "source_width": orig_w,
+        "source_height": orig_h,
+        "crop_width_fraction": round(crop_w / orig_w, 4),
+        "preview_url": f"/videos/{clip_job_id}/{preview_name}",
+        "saved_overrides": saved_overrides,
+        "scenes": scenes_out,
+    }
+
+
+@app.post("/api/clip-jobs/{clip_job_id}/clips/{clip_index}/reframe")
+async def api_reframe_clip(clip_job_id: str, clip_index: int, req: ReframeRequest, request: Request):
+    """Re-render a clip with hand-framed scenes, leaving its cut untouched.
+
+    crop_overrides are keyed by scene index. A scene index only means
+    anything against a given cut, so framing rides with the cut.
+    """
+    if not _ensure_job_files(clip_job_id):
+        raise HTTPException(status_code=404, detail="Job metadata not found")
+    if clip_job_id not in jobs:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = jobs[clip_job_id]
+
+    def _fraction(v):
+        return min(1.0, max(0.0, float(v)))
+
+    overrides = {}
+    for key, value in (req.crop_overrides or {}).items():
+        try:
+            idx = int(key)
+            if isinstance(value, dict):
+                overrides[idx] = {"x": _fraction(value["x"]),
+                                   "y": _fraction(value.get("y", 0.5))}
+            else:
+                overrides[idx] = _fraction(value)
+        except (KeyError, TypeError, ValueError):
+            continue
+    if not overrides:
+        raise HTTPException(status_code=400,
+                            detail="No scene framing was provided.")
+
+    lock = _rerender_locks.setdefault(clip_job_id, asyncio.Lock())
+    async with lock:
+        output_dir = os.path.join(OUTPUT_DIR, clip_job_id)
+        json_files = glob.glob(os.path.join(output_dir, "*_metadata.json"))
+        if not json_files:
+            raise HTTPException(status_code=404, detail="Metadata not found")
+        with open(json_files[0], 'r') as f:
+            data = json.load(f)
+
+        clips = data.get('shorts', [])
+        if not 0 <= clip_index < len(clips):
+            raise HTTPException(status_code=404, detail="Clip not found")
+        clip = clips[clip_index]
+        if data.get('output_format') == 'horizontal':
+            raise HTTPException(
+                status_code=400,
+                detail="Horizontal clips keep the full frame; there is no crop to reframe.")
+
+        segments, canonical_range = _clip_recipe_parts(clip)
+        source_path = _locate_source(clip_job_id)
+        if not source_path:
+            raise HTTPException(
+                status_code=409,
+                detail="The source video is no longer on the server, so the "
+                       "framing of this clip can no longer be changed.")
+
+        v_transcript = (recut.virtual_transcript(data.get('transcript') or {}, segments)
+                        if req.reapply_captions else None)
+
+        base_name = os.path.basename(json_files[0]).replace('_metadata.json', '')
+        clean_name = f"{base_name}_clip_{clip_index + 1}.mp4"
+
+        def run():
+            return recut.perform_recut(
+                input_path=source_path, segments=segments,
+                output_dir=output_dir, clean_name=clean_name,
+                reframe=True,
+                crop_overrides=overrides,
+                captions_transcript=v_transcript)
+
+        try:
+            loop = asyncio.get_event_loop()
+            served_name, _clean = await loop.run_in_executor(None, run)
+        except RuntimeError as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+        new_video_url = f"/videos/{clip_job_id}/{served_name}"
+        new_recipe = {"v": 1, "segments": segments,
+                      "canonical_range": canonical_range}
+        updates = {
+            'video_url': new_video_url,
+            'recipe': new_recipe,
+            'crop_overrides': {str(k): v for k, v in overrides.items()},
+        }
+
+        new_ranges = []
+        try:
+            import layout_ranges as _lr
+            new_ranges = _lr.read(os.path.join(output_dir, _clean))
+            if new_ranges:
+                updates["layout_ranges"] = new_ranges
+        except Exception:
+            pass
+
+        clip.update(updates)
+        data['shorts'] = clips
+        os.makedirs(output_dir, exist_ok=True)
+        with open(json_files[0], 'w') as f:
+            json.dump(data, f, indent=2)
+        mem_job = jobs.get(clip_job_id)
+        if mem_job and mem_job.get('result'):
+            mem_clips = mem_job['result'].get('clips') or []
+            if clip_index < len(mem_clips):
+                mem_clips[clip_index].update(updates)
+
+        return {
+            "success": True,
+            "new_video_url": new_video_url,
+            "crop_overrides": {str(k): v for k, v in overrides.items()},
+        }
+
+
 class RejectedRenderRequest(BaseModel):
     clip_index: int
 
@@ -2071,7 +2368,6 @@ async def api_dismiss_rejected_clip(clip_job_id: str, req: RejectedRenderRequest
 from editor import VideoEditor
 from subtitles import generate_srt, burn_subtitles, generate_srt_from_video
 from hooks import add_hook_to_video
-import recut
 from translate import translate_video, get_supported_languages
 from thumbnail import analyze_video_for_titles, refine_titles, generate_thumbnail, generate_youtube_description
 

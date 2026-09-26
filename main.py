@@ -944,9 +944,11 @@ Technical Details: {str(e)}
     
     return downloaded_file, sanitized_title
 
-def process_video_to_vertical(input_video, final_output_video):
+def process_video_to_vertical(input_video, final_output_video, crop_overrides=None):
     """
     Core logic to convert horizontal video to vertical using scene detection and Active Speaker Tracking (MediaPipe).
+    ``crop_overrides`` maps scene index -> crop centre fraction (or {"x": f, "y": f})
+    for scenes the user framed by hand. The CUT is never touched.
     """
     script_start_time = time.time()
     
@@ -1070,6 +1072,34 @@ def process_video_to_vertical(input_video, final_output_video):
     scene_boundaries = []
     for s_start, s_end in scenes:
         scene_boundaries.append((s_start.get_frames(), s_end.get_frames()))
+
+    # Apply manual crop overrides: set cameraman centre for scenes
+    # the user positioned by hand. Runs on the source path (reframe)
+    # so the canonical file's framing can be overridden per scene.
+    # Unknown indices and malformed values are skipped silently.
+    if crop_overrides:
+        try:
+            for raw_idx, value in crop_overrides.items():
+                try:
+                    idx = int(raw_idx)
+                except (TypeError, ValueError):
+                    continue
+                if not (0 <= idx < len(scene_boundaries)):
+                    continue
+                try:
+                    if isinstance(value, dict):
+                        fraction = float(value.get("x", 0.5))
+                    else:
+                        fraction = float(value)
+                    x_center = max(0, min(int(round(fraction * original_width)), original_width))
+                    # Position the cameraman at the override for every
+                    # frame of this scene; it will snap on scene change.
+                    cameraman.current_center_x = x_center
+                    cameraman.target_center_x = x_center
+                except (TypeError, ValueError):
+                    continue
+        except Exception:
+            pass
 
     # Global tracker for single-person shots
     speaker_tracker = SpeakerTracker(cooldown_frames=30)

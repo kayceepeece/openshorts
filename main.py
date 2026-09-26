@@ -1396,7 +1396,7 @@ def detect_clips_stage2(transcripts, dossiers, custom_prompt, api_key, content_t
 
 def detect_clips_windowed(transcripts, dossiers, custom_prompt, api_key, content_type='general',
                           used_moments=None, clip_count=None, min_duration=15.0, max_duration=60.0):
-    """Windowed two-pass clip detection (enable with WINDOWED_CLIP_DETECTION=1).
+    """Windowed two-pass clip detection (the default clip path).
 
     Pass 1 — score: split each video into ~90s transcript windows aligned to
     Whisper segment boundaries, score every window 0-12, take the global top-N.
@@ -1840,11 +1840,7 @@ if __name__ == '__main__':
             print("❌ Error: GEMINI_API_KEY not found in environment variables.")
             sys.exit(1)
             
-        if os.getenv("WINDOWED_CLIP_DETECTION", "0") == "1":
-            print("🪟 Windowed two-pass clip detection enabled (score → detail).")
-            clips_data = detect_clips_windowed(transcripts, dossiers, args.prompt, api_key, args.content_type, used_moments=used_moments, clip_count=args.clip_count, min_duration=args.min_duration, max_duration=args.max_duration)
-        else:
-            clips_data = detect_clips_stage2(transcripts, dossiers, args.prompt, api_key, args.content_type, used_moments=used_moments, clip_count=args.clip_count, min_duration=args.min_duration, max_duration=args.max_duration)
+        clips_data = detect_clips_windowed(transcripts, dossiers, args.prompt, api_key, args.content_type, used_moments=used_moments, clip_count=args.clip_count, min_duration=args.min_duration, max_duration=args.max_duration)
         
         if not clips_data or 'shorts' not in clips_data:
             print("❌ Failed to identify clips.")

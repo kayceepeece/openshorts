@@ -15,7 +15,7 @@ from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request, Hea
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from s3_uploader import upload_job_artifacts, list_all_clips, upload_actor_to_s3, list_actor_gallery, upload_video_to_gallery, list_video_gallery
 
 load_dotenv()
@@ -983,6 +983,17 @@ async def run_job(job_id, job_data):
                             data = json.load(f)
                         clips = data.get('shorts', [])
                         cost_analysis = data.get('cost_analysis')
+                        # Remember the source videos in the metadata so the
+                        # recut engine (SOURCE path) can find them later,
+                        # even after a server restart.
+                        try:
+                            vpaths = (jobs.get(job_id) or {}).get('video_paths')
+                            if vpaths:
+                                data['source_videos'] = vpaths
+                                with open(target_json, 'w') as mf:
+                                    json.dump(data, mf, indent=2)
+                        except Exception:
+                            pass
                         # Clip files are named {job_id}_clip_{i+1}.mp4 by main.py
                         for i, clip in enumerate(clips):
                             clip_filename = f"{job_id}_clip_{i+1}.mp4"
@@ -1644,7 +1655,10 @@ async def generate_clips(project_id: str, req: ClipJobCreate, request: Request):
         'logs': [f"Clip job {clip_job_id} queued."],
         'cmd': cmd,
         'env': env,
-        'output_dir': clip_output_dir
+        'output_dir': clip_output_dir,
+        # Kept so the recut engine can find the source video later
+        # (SOURCE path) even after a server restart.
+        'video_paths': video_paths
     }
     
     await job_queue.put(clip_job_id)
@@ -1719,6 +1733,199 @@ async def api_get_clip_job_clips(clip_job_id: str):
         raise HTTPException(status_code=404, detail="Clips not found or job not completed yet")
         
     return result
+
+# ── Clip recut engine ───────────────────────────────────────────────────
+# Re-render a finished clip from an edited segment list without re-running
+# the whole clip job. Segments are always in SOURCE-ABSOLUTE seconds (the
+# same clock the clip metadata's start/end use).
+
+class RecutSegment(BaseModel):
+    start: float
+    end: float
+
+class RecutRequest(BaseModel):
+    segments: List[RecutSegment]
+    snap_to_words: bool = True
+    with_captions: bool = True
+
+
+def _recut_metadata_file(job_id: str):
+    files = glob.glob(os.path.join(OUTPUT_DIR, job_id, "*_metadata.json"))
+    return files[0] if files else None
+
+
+def _canonical_clip_file(output_dir: str, base_name: str, index: int) -> str:
+    """The clean reframed clip file for ``index`` — the immutable FAST-path
+    input. The pipeline writes it as ``<base>_clip_<n>.mp4`` and every recut
+    keeps it around (recuts are written as new ``recut_*`` files), so the
+    fast path always cuts from pristine, uncaptioned footage and the simple
+    source-offset rebase stays correct forever."""
+    return f"{base_name}_clip_{index + 1}.mp4"
+
+
+def _clip_recipe_parts(clip):
+    """(segments, canonical_range) for a clip.
+
+    segments = the clip's current cut in source-absolute seconds (what the
+    editor shows and what rerender expects back). canonical_range = the
+    source range the immutable canonical file was cut from — set once at
+    render time, never changed by recuts. Synthesized from the flat
+    start/end for clips that were never recut.
+    """
+    recipe = clip.get("recipe") or {}
+    canonical_range = recipe.get("canonical_range") or {
+        "start": float(clip.get("start", 0) or 0),
+        "end": float(clip.get("end", 0) or 0)}
+    segments = recipe.get("segments") or [dict(canonical_range)]
+    return segments, canonical_range
+
+
+@app.get("/api/clip-jobs/{clip_job_id}/clips/{clip_index}/edl")
+async def api_get_clip_edl(clip_job_id: str, clip_index: int):
+    """The current segment list + canonical range for a clip — what the
+    recut endpoint expects back, in source-absolute seconds."""
+    meta_path = _recut_metadata_file(clip_job_id)
+    if not meta_path:
+        raise HTTPException(status_code=404, detail="Job metadata not found")
+    with open(meta_path, "r") as f:
+        data = json.load(f)
+    clips = data.get("shorts", [])
+    if not 0 <= clip_index < len(clips):
+        raise HTTPException(status_code=404, detail="Clip not found")
+    clip = clips[clip_index]
+    segments, canonical_range = _clip_recipe_parts(clip)
+    return {
+        "clip_index": clip_index,
+        "segments": segments,
+        "canonical_range": canonical_range,
+        "video_url": clip.get("video_url"),
+        "duration": recut.total_duration(segments),
+    }
+
+
+@app.post("/api/clip-jobs/{clip_job_id}/clips/{clip_index}/rerender")
+async def api_rerender_clip(clip_job_id: str, clip_index: int, req: RecutRequest):
+    """Re-render one clip from an edited segment list.
+
+    FAST path: every segment is already inside the current canonical clip
+    file -> cut straight from it (seconds, no AI). SOURCE path: a segment
+    reaches outside -> cut from the retained source video and re-run the
+    vertical reframe. Captions are re-burned from the remapped transcript.
+    """
+    meta_path = _recut_metadata_file(clip_job_id)
+    if not meta_path:
+        raise HTTPException(status_code=404, detail="Job metadata not found")
+
+    with _job_lock(clip_job_id):
+        with open(meta_path, "r") as f:
+            data = json.load(f)
+        clips = data.get("shorts", [])
+        if not 0 <= clip_index < len(clips):
+            raise HTTPException(status_code=404, detail="Clip not found")
+        clip = clips[clip_index]
+        transcript = data.get("transcript") or {}
+        output_dir = os.path.join(OUTPUT_DIR, clip_job_id)
+        base_name = os.path.basename(meta_path).replace("_metadata.json", "")
+        clean_name = f"{base_name}_clip_{clip_index + 1}.mp4"
+
+        _, canonical_range = _clip_recipe_parts(clip)
+        source_videos = data.get("source_videos") or []
+        video_idx = int(clip.get("video_index", 0) or 0)
+        source_path = source_videos[video_idx] if video_idx < len(source_videos) else None
+
+        try:
+            segments = recut.normalize_segments(
+                [{"start": s.start, "end": s.end} for s in req.segments])
+        except recut.RecutError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
+        if req.snap_to_words:
+            snap_bound = max(s["end"] for s in segments)
+            if source_path and os.path.exists(source_path):
+                from main import get_video_duration  # heavy — lazy
+                try:
+                    snap_bound = get_video_duration(source_path)
+                except Exception:
+                    pass
+            try:
+                segments = recut.snap_segments(segments, transcript, snap_bound)
+            except Exception:
+                pass  # snapping is best-effort; raw bounds still valid
+            if not source_path:
+                # Without a source the fast path is the only path, so clamp
+                # back into the canonical range instead of failing.
+                segments = [
+                    {"start": round(max(s["start"], canonical_range["start"]), 3),
+                     "end": round(min(s["end"], canonical_range["end"]), 3)}
+                    for s in segments]
+            try:
+                segments = recut.normalize_segments(segments)
+            except recut.RecutError as e:
+                raise HTTPException(status_code=400, detail=str(e))
+
+        canonical_file = _canonical_clip_file(output_dir, base_name, clip_index)
+        canonical_path = os.path.join(output_dir, canonical_file)
+        if not os.path.exists(canonical_path):
+            raise HTTPException(status_code=404, detail="Clip file not found on disk")
+
+        # FAST when every requested part sits inside the range the immutable
+        # canonical file was cut from — cut straight from it, no AI.
+        if recut.within_range(segments, canonical_range["start"],
+                              canonical_range["end"]):
+            fast, input_path = True, canonical_path
+            cut_segments = recut.rebase_segments(
+                segments, canonical_range["start"], canonical_range["end"])
+        else:
+            if not source_path or not os.path.exists(source_path):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Those segments reach outside the current clip and "
+                           "the source video is no longer available.")
+            fast, input_path, cut_segments = False, source_path, segments
+
+        v_transcript = recut.virtual_transcript(transcript, segments)
+
+        loop = asyncio.get_event_loop()
+        try:
+            served_name, _ = await loop.run_in_executor(
+                None,
+                lambda: recut.perform_recut(
+                    input_path=input_path, segments=cut_segments,
+                    output_dir=output_dir, clean_name=clean_name,
+                    reframe=not fast,
+                    captions_transcript=v_transcript,
+                    burn_captions=req.with_captions))
+        except RuntimeError as e:
+            raise HTTPException(status_code=500, detail=str(e))
+
+        new_video_url = f"/videos/{clip_job_id}/{served_name}"
+        # The canonical file never changes, so its range stays put; the
+        # recipe tracks the clip's current cut in source-absolute seconds.
+        new_recipe = {"v": 1, "segments": segments,
+                      "canonical_range": canonical_range}
+        new_start = min(s["start"] for s in segments)
+        new_end = max(s["end"] for s in segments)
+        updates = {"video_url": new_video_url, "start": new_start,
+                   "end": new_end, "recipe": new_recipe}
+        clip.update(updates)
+        data["shorts"] = clips
+        _atomic_write_json(meta_path, data)
+
+        mem_job = jobs.get(clip_job_id)
+        if mem_job and mem_job.get("result"):
+            mem_clips = mem_job["result"].get("clips") or []
+            if clip_index < len(mem_clips):
+                mem_clips[clip_index].update(updates)
+
+        return {
+            "success": True,
+            "new_video_url": new_video_url,
+            "render_path": "fast" if fast else "source",
+            "start": new_start,
+            "end": new_end,
+            "duration": recut.total_duration(segments),
+        }
+
 
 class RejectedRenderRequest(BaseModel):
     clip_index: int
@@ -1825,6 +2032,7 @@ async def api_dismiss_rejected_clip(clip_job_id: str, req: RejectedRenderRequest
 from editor import VideoEditor
 from subtitles import generate_srt, burn_subtitles, generate_srt_from_video
 from hooks import add_hook_to_video
+import recut
 from translate import translate_video, get_supported_languages
 from thumbnail import analyze_video_for_titles, refine_titles, generate_thumbnail, generate_youtube_description
 

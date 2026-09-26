@@ -106,7 +106,7 @@ When ranking clips from best to worst, score each on these factors in order:
    1 = noticeable pacing issues
    0 = too slow or too long
 
-Rank clips by TOTAL SCORE (max 12). Include only clips scoring ≥ 6.
+Rank clips by TOTAL SCORE (max 12) and emit it as "predicted_score" on each clip object. Include only clips scoring ≥ 6.
 If fewer than 3 clips score ≥ 6, lower the threshold to ≥ 4 rather than returning nothing.
 
 ---
@@ -125,6 +125,7 @@ For a hypothetical 2-minute cooking tutorial, the output should look like this:
       "video_description_for_tiktok": "Why does your steak never look restaurant-perfect? 🥩 The #1 mistake home cooks make is moisture. Here's how to fix it. #CookingTips #Steak",
       "video_description_for_instagram": "If your steak turns grey instead of golden, this is probably why. Save this for your next cookout. 🥩🔥 #SteakNight #CookingHacks",
       "video_title_for_youtube_short": "The #1 Steak-Searing Mistake",
+      "predicted_score": 9,
       "viral_hook_text": "Why does your steak never look like this?"
     },
     {
@@ -134,6 +135,7 @@ For a hypothetical 2-minute cooking tutorial, the output should look like this:
       "video_description_for_tiktok": "The golden rule of searing steak: if it sticks, it's not ready. 🧠 #SteakTips #Cooking",
       "video_description_for_instagram": "Stop forcing your steak off the pan. This one line will change how you cook forever. #ChefTips",
       "video_title_for_youtube_short": "If it sticks, it's not ready",
+      "predicted_score": 9,
       "viral_hook_text": "Stop flipping your steak too early"
     },
     {
@@ -143,6 +145,7 @@ For a hypothetical 2-minute cooking tutorial, the output should look like this:
       "video_description_for_tiktok": "Overcrowding the pan is ruining your steak. Here's the visual proof. 🍳 #CookingMistakes #Steak",
       "video_description_for_instagram": "Two steaks. One pan. No sear. Here's why spacing matters. #Cooking101",
       "video_title_for_youtube_short": "Why overcrowding kills your sear",
+      "predicted_score": 9,
       "viral_hook_text": "This is why your steak turns grey"
     }
   ]

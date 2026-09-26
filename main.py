@@ -12,6 +12,14 @@ from google import genai
 from dotenv import load_dotenv
 import json
 
+# Windowed clip-selection helpers (ported from upstream): word-snapping,
+# scoring windows, overlap dedupe, score-based trimming. Stdlib-only.
+from clip_selection import (
+    build_transcript_windows, score_batches, shortlist_target,
+    clip_count_targets, trim_to_best, dedupe_overlapping,
+    snap_clip_to_words, compact_words, clip_duration_bounds,
+)
+
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning, module='google.protobuf')
 
@@ -23,6 +31,20 @@ ASPECT_RATIO = 9 / 16
 
 # Load helper to build clipping prompt dynamically based on content type
 def get_clipping_prompt(input_data_section, user_detection_prompt="", content_type='general', clip_count=None, min_duration=15.0, max_duration=60.0):
+    # Sanity-clamp duration bounds: bad input degrades instead of breaking the job
+    try:
+        min_duration = float(min_duration)
+    except (TypeError, ValueError):
+        min_duration = 15.0
+    try:
+        max_duration = float(max_duration)
+    except (TypeError, ValueError):
+        max_duration = 60.0
+    min_duration = min(max(min_duration, 5.0), 175.0)
+    max_duration = min(max(max_duration, 10.0), 180.0)
+    if max_duration < min_duration + 5.0:
+        max_duration = min(180.0, min_duration + 5.0)
+
     # Load universal rules
     general_rules = ""
     try:
@@ -95,13 +117,14 @@ STRICT EXCLUSIONS:
 - No generic intros/outros or purely sponsorship segments unless they contain the hook.
 - No clips < {min_d:.1f} s or > {max_d:.1f} s.
 
-OUTPUT — RETURN ONLY VALID JSON (no markdown, no comments). Order clips by predicted performance (best to worst). Write descriptions that are natural to the content type and optimised for each platform:
+OUTPUT — RETURN ONLY VALID JSON (no markdown, no comments). Order clips by predicted performance (best to worst) and include "predicted_score" (0-12, your TOTAL SCORE) on each clip. Write descriptions that are natural to the content type and optimised for each platform:
 {{
   "shorts": [
     {{
       "video_index": <0-based index of the video this clip is from, e.g., 0 if only one video is provided>,
       "start": <number in seconds, e.g., 12.340>,
       "end": <number in seconds, e.g., 37.900>,
+      "predicted_score": <your TOTAL SCORE for this clip, 0-12>,
       "video_description_for_tiktok": "<description for TikTok oriented to get views>",
       "video_description_for_instagram": "<description for Instagram oriented to get views>",
       "video_title_for_youtube_short": "<title for YouTube Short oriented to get views 100 chars max>",
@@ -987,8 +1010,8 @@ def get_viral_clips(transcript_result, video_duration, content_type='general'):
 
     client = genai.Client(api_key=api_key)
     
-    # We use gemini-3.5-flash (GA May 2026, current production standard).
-    model_name = 'gemini-3.5-flash'
+    # We use gemini-3.8-flash (verified available via API 2026-09-26).
+    model_name = 'gemini-3.8-flash'
     
     print(f"🤖  Initializing Gemini with model: {model_name}")
 
@@ -1001,6 +1024,7 @@ def get_viral_clips(transcript_result, video_duration, content_type='general'):
                 's': word['start'],
                 'e': word['end']
             })
+    words = compact_words(words)  # round timestamps: full float precision wastes tokens
 
     input_data_section = f"VIDEO_DURATION_SECONDS: {video_duration}\n"
     input_data_section += f"TRANSCRIPT_TEXT:\n{json.dumps(transcript_result['text'])}\n"
@@ -1018,12 +1042,12 @@ def get_viral_clips(transcript_result, video_duration, content_type='general'):
         try:
             usage = response.usage_metadata
             if usage:
-                # Gemini 3.5 Flash Pricing (June 2026)
-                # Input: $1.50 per 1M tokens
-                # Output: $9.00 per 1M tokens
+                # Gemini 3.8 Flash Pricing (intro rate thru Dec 31 2026; doubles Jan 1 2027)
+                # Input: $0.75 per 1M tokens
+                # Output: $3.75 per 1M tokens
                 
-                input_price_per_million = 1.50
-                output_price_per_million = 9.00
+                input_price_per_million = 0.75
+                output_price_per_million = 3.75
                 
                 prompt_tokens = usage.prompt_token_count
                 output_tokens = usage.candidates_token_count
@@ -1060,6 +1084,13 @@ def get_viral_clips(transcript_result, video_duration, content_type='general'):
         text = text.strip()
         
         result_json = json.loads(text)
+        # Snap clip boundaries onto word boundaries: cuts land in pauses, not mid-word
+        lo, hi = clip_duration_bounds()
+        for clip in result_json.get('shorts', []):
+            s, e = snap_clip_to_words(clip.get('start', 0.0), clip.get('end', 0.0),
+                                      words, video_duration,
+                                      min_duration=lo, max_duration=hi)
+            clip['start'], clip['end'] = s, e
         if cost_analysis:
             result_json['cost_analysis'] = cost_analysis
             
@@ -1138,7 +1169,7 @@ Structure:
     print("🤖 Generating forensic analysis dossier from Gemini...")
     try:
         response = client.models.generate_content(
-            model='gemini-3.5-flash',
+            model='gemini-3.8-flash',
             contents=[file_upload, prompt]
         )
         dossier_text = response.text
@@ -1178,11 +1209,11 @@ def detect_clips_stage2(transcripts, dossiers, custom_prompt, api_key, content_t
 
     print(f"🤖 Analyzing with Gemini for Clip Detection ({len(transcripts)} video(s))...")
     client = genai.Client(api_key=api_key)
-    model_name = 'gemini-3.5-flash'
+    model_name = 'gemini-3.8-flash'
 
-    # Gemini 3.5 Flash pricing (June 2026)
-    INPUT_PRICE_PER_MILLION  = 1.50
-    OUTPUT_PRICE_PER_MILLION = 9.00
+    # Gemini 3.8 Flash pricing (intro rate thru Dec 31 2026; doubles Jan 1 2027)
+    INPUT_PRICE_PER_MILLION  = 0.75
+    OUTPUT_PRICE_PER_MILLION = 3.75
 
     # Token estimation constants
     TOKEN_ESTIMATE_DIVISOR = 4      # ~4 chars per token
@@ -1210,6 +1241,7 @@ def detect_clips_stage2(transcripts, dossiers, custom_prompt, api_key, content_t
         for segment in trans.get('segments', []):
             for word in segment.get('words', []):
                 words.append({'w': word['word'], 's': word['start'], 'e': word['end']})
+        words = compact_words(words)  # round timestamps: full float precision wastes tokens
         duration = trans.get('duration_seconds', 0.0)
 
         input_data_section  = "=== VIDEO INDEX 0 ===\n"
@@ -1265,6 +1297,11 @@ def detect_clips_stage2(transcripts, dossiers, custom_prompt, api_key, content_t
         shorts = video_result.get("shorts", [])
         for clip in shorts:
             clip["video_index"] = video_index
+            # Snap boundaries onto word boundaries (cuts land in pauses, not mid-word)
+            s, e = snap_clip_to_words(clip.get('start', 0.0), clip.get('end', 0.0),
+                                      words, duration,
+                                      min_duration=min_duration, max_duration=max_duration)
+            clip['start'], clip['end'] = s, e
         return shorts
 
     for video_index, (trans, doss) in enumerate(zip_longest(transcripts, dossiers, fillvalue="")):
@@ -1354,6 +1391,258 @@ def detect_clips_stage2(transcripts, dossiers, custom_prompt, api_key, content_t
         "shorts":        all_shorts,
         "rejected_clips": rejected,
         "cost_analysis": total_cost_data,
+    }
+
+
+def detect_clips_windowed(transcripts, dossiers, custom_prompt, api_key, content_type='general',
+                          used_moments=None, clip_count=None, min_duration=15.0, max_duration=60.0):
+    """Windowed two-pass clip detection (enable with WINDOWED_CLIP_DETECTION=1).
+
+    Pass 1 — score: split each video into ~90s transcript windows aligned to
+    Whisper segment boundaries, score every window 0-12, take the global top-N.
+    A single call over a whole transcript clusters picks near the start;
+    scoring windows first forces full-video coverage.
+    Pass 2 — detail: run the standard clip prompt over the shortlisted windows
+    only (words + dossier + exclusions), then snap/dedupe/trim.
+    Videos with <=3 windows skip pass 1 and go straight to detail.
+    """
+    from itertools import zip_longest
+
+    print(f"🪟 Windowed clip detection ({len(transcripts)} video(s), 3.8-flash both passes)...")
+    client = genai.Client(api_key=api_key)
+    model_name = 'gemini-3.8-flash'
+    used_moments = list(used_moments or [])  # None-safe: exclusion helpers iterate this
+    INPUT_PRICE_PER_MILLION  = 0.75
+    OUTPUT_PRICE_PER_MILLION = 3.75
+
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                               "prompts", "score_windows.txt"), "r", encoding="utf-8") as f:
+            scoring_tmpl = f.read()
+    except Exception as e:
+        print(f"❌ Could not load scoring prompt: {e}")
+        return None
+
+    total_cost_data = {
+        "input_tokens":  0,
+        "output_tokens": 0,
+        "input_cost":    0.0,
+        "output_cost":   0.0,
+        "total_cost":    0.0,
+        "model":         model_name,
+        "video_count":   len(transcripts),
+    }
+
+    def _track_cost(usage):
+        try:
+            if usage:
+                pi = usage.prompt_token_count or 0
+                po = usage.candidates_token_count or 0
+                total_cost_data["input_tokens"]  += pi
+                total_cost_data["output_tokens"] += po
+                total_cost_data["input_cost"]    += (pi / 1_000_000) * INPUT_PRICE_PER_MILLION
+                total_cost_data["output_cost"]   += (po / 1_000_000) * OUTPUT_PRICE_PER_MILLION
+                total_cost_data["total_cost"]     = total_cost_data["input_cost"] + total_cost_data["output_cost"]
+                return pi, po
+        except Exception:
+            pass
+        return 0, 0
+
+    def _clean_json(text):
+        text = (text or "").strip()
+        if text.startswith("```json"):
+            text = text[7:]
+        if text.startswith("```"):
+            text = text[3:]
+        if text.endswith("```"):
+            text = text[:-3]
+        return text.strip()
+
+    def _score_batch(batch):
+        """Score one batch of windows. Returns {window_id: (score, why)}."""
+        lines = [f"{w['id']} [{w['start']:.1f}-{w['end']:.1f}]: {w['text']}" for w in batch]
+        prompt = scoring_tmpl.format(content_type=content_type,
+                                     n_windows=len(batch),
+                                     windows="\n".join(lines))
+        try:
+            response = client.models.generate_content(model=model_name, contents=prompt)
+            _track_cost(getattr(response, 'usage_metadata', None))
+            data = json.loads(_clean_json(response.text))
+            items = data.get("scores", data) if isinstance(data, dict) else data
+            out = {}
+            for item in items or []:
+                try:
+                    out[str(item.get("id", ""))] = (float(item.get("score", 0) or 0.0),
+                                                    str(item.get("why", ""))[:160])
+                except (TypeError, ValueError, AttributeError):
+                    continue
+            return out
+        except Exception as e:
+            print(f"   ⚠️ Scoring batch failed ({e}) — those windows score 0")
+            return {}
+
+    def _detail_call(video_index, window_entries, words, duration, dossier, extra_exclusions=None):
+        """Run the standard clip prompt over shortlisted windows. Returns shorts list."""
+        win_lines = [f"{w['id']} [{w['start']:.1f}-{w['end']:.1f}] (score {score:g}/12): {w['text']}"
+                     for w, score, _why in window_entries]
+        # Words scoped to the shortlisted span (padded); full list kept for snapping
+        lo = max(0.0, min(w['start'] for w, _s, _y in window_entries) - 2.0)
+        hi = min(duration, max(w['end'] for w, _s, _y in window_entries) + 2.0)
+        scoped = [x for x in words if x['e'] >= lo and x['s'] <= hi]
+
+        user_prompt_str = ""
+        if custom_prompt:
+            user_prompt_str = f"USER DETECTION PROMPT / INSTRUCTIONS:\n{custom_prompt}\n"
+
+        input_data_section  = f"=== VIDEO INDEX {video_index} ===\n"
+        input_data_section += f"VIDEO_DURATION_SECONDS: {duration}\n"
+        input_data_section += ("CANDIDATE WINDOWS (pre-scored — select clips ONLY from these "
+                               "windows, nowhere else):\n" + "\n".join(win_lines) + "\n")
+        input_data_section += f"WORDS_JSON (candidate regions only):\n{json.dumps(scoped)}\n"
+        if dossier:
+            input_data_section += f"VISUAL DOSSIER:\n{dossier}\n"
+        excl_block = build_used_moments_block(video_index, used_moments)
+        if excl_block:
+            input_data_section += "\n" + excl_block
+        if extra_exclusions:
+            fmt = ", ".join(f"[{r[0]:.1f}-{r[1]:.1f}]" for r in sorted(extra_exclusions))
+            input_data_section += f"\n⚠️ ADDITIONAL HARD EXCLUSIONS (rejected as duplicates): {fmt}\n"
+
+        prompt = get_clipping_prompt(input_data_section, user_detection_prompt=user_prompt_str,
+                                     content_type=content_type, clip_count=clip_count,
+                                     min_duration=min_duration, max_duration=max_duration)
+        response = client.models.generate_content(model=model_name, contents=prompt)
+        pi, po = _track_cost(getattr(response, 'usage_metadata', None))
+        print(f"   💰 Detail call: {pi:,} in / {po:,} out → ${(pi/1_000_000)*INPUT_PRICE_PER_MILLION + (po/1_000_000)*OUTPUT_PRICE_PER_MILLION:.6f}")
+        data = json.loads(_clean_json(response.text))
+        shorts = data.get("shorts", [])
+        for clip in shorts:
+            clip["video_index"] = video_index
+            s, e = snap_clip_to_words(clip.get('start', 0.0), clip.get('end', 0.0),
+                                      words, duration,
+                                      min_duration=min_duration, max_duration=max_duration)
+            clip['start'], clip['end'] = s, e
+        return shorts
+
+    def _video_words(trans):
+        w = [{'w': wd.get('word', ''), 's': wd.get('start', 0.0), 'e': wd.get('end', 0.0)}
+             for seg in trans.get('segments', []) for wd in seg.get('words', [])]
+        return compact_words(w)
+
+    all_shorts   = []
+    rejected     = []
+    video_entries = {}  # video_index -> shortlisted entries (for repair re-calls)
+
+    for video_index, (trans, doss) in enumerate(zip_longest(transcripts, dossiers, fillvalue="")):
+        if trans == "":
+            continue
+        duration = float(trans.get('duration_seconds', 0.0) or 0.0)
+        words = _video_words(trans)
+
+        windows = build_transcript_windows(trans, duration)
+        # Drop windows fully inside already-used moments — no need to score them
+        my_used = [u for u in (used_moments or []) if u.get("video_index") == video_index]
+        if my_used:
+            windows = [w for w in windows
+                       if not any(u['start'] - 1.0 <= w['start'] and w['end'] <= u['end'] + 1.0
+                                  for u in my_used)]
+
+        print(f"\n📹 Video {video_index + 1}/{len(transcripts)}: {len(windows)} window(s)")
+
+        if len(windows) <= 3:
+            entries = [(w, 12.0, "short video: all windows shortlisted") for w in windows]
+        else:
+            scores = {}
+            for batch in score_batches(windows, 10):
+                print(f"   🔍 Scoring {len(batch)} window(s)...")
+                scores.update(_score_batch(batch))
+            ranked = sorted(windows, key=lambda w: (-scores.get(w['id'], (0.0, ""))[0], w['start']))
+            short = sorted(ranked[:shortlist_target(duration)], key=lambda w: w['start'])
+            entries = [(w, scores.get(w['id'], (0.0, ""))[0],
+                        scores.get(w['id'], (0.0, ""))[1]) for w in short]
+            print(f"   ✅ Shortlisted {len(entries)} window(s)")
+        video_entries[video_index] = (entries, words, duration, doss)
+
+        if not entries:
+            print("   ⚠️ No windows to detail — skipping video")
+            continue
+        try:
+            shorts = _detail_call(video_index, entries, words, duration, doss)
+        except Exception as e:
+            print(f"   ❌ Detail call failed on video {video_index + 1}: {e}")
+            continue
+        shorts = dedupe_overlapping(shorts)
+        _lo_n, hi_n = clip_count_targets(len(entries))
+        cap = int(clip_count) if clip_count and int(clip_count) > 0 else hi_n
+        shorts = trim_to_best(shorts, cap)
+        print(f"   ✅ {len(shorts)} clip(s) after dedupe/trim")
+        all_shorts.extend(shorts)
+
+    # ── Overlap post-filter + auto-repair against previously-clipped moments ──
+    if used_moments:
+        accepted = []
+        need_repair = {}
+        for clip in all_shorts:
+            vi = clip.get('video_index', 0)
+            s, e = clip.get('start', 0.0), clip.get('end', 0.0)
+            ranges = [(u['start'], u['end']) for u in used_moments if u.get("video_index") == vi]
+            if not ranges:
+                accepted.append(clip)
+                continue
+            if overlaps_used(s, e, ranges):
+                trimmed = trim_to_used(s, e, ranges)
+                if trimmed and trimmed != (s, e) and not overlaps_used(trimmed[0], trimmed[1], ranges):
+                    clip['start'], clip['end'] = trimmed
+                    accepted.append(clip)
+                    print(f"   ✂️ Trimmed clip [{s:.1f}-{e:.1f}] → [{trimmed[0]:.1f}-{trimmed[1]:.1f}]")
+                else:
+                    rejected.append(clip)
+                    need_repair.setdefault(vi, []).append((s, e))
+                    print(f"   ⛔ Rejected clip [{s:.1f}-{e:.1f}] (overlaps previous moments)")
+            else:
+                accepted.append(clip)
+
+        if rejected:
+            print(f"\n🔧 Auto-repair: requesting replacements for {len(rejected)} rejected clip(s)...")
+            for vi in sorted(need_repair):
+                if vi not in video_entries:
+                    continue
+                entries, words, duration, doss = video_entries[vi]
+                try:
+                    reps = _detail_call(vi, entries, words, duration, doss,
+                                        extra_exclusions=need_repair[vi])
+                    for clip in reps:
+                        s, e = clip.get('start', 0.0), clip.get('end', 0.0)
+                        ranges = [(u['start'], u['end']) for u in used_moments
+                                  if u.get("video_index") == vi]
+                        if overlaps_used(s, e, ranges):
+                            rejected.append(clip)
+                            print(f"   ⛔ Replacement [{s:.1f}-{e:.1f}] also overlaps — discarding")
+                        else:
+                            accepted.append(clip)
+                            print(f"   ✅ Replacement [{s:.1f}-{e:.1f}] accepted")
+                except Exception as e:
+                    print(f"   ❌ Auto-repair failed for video {vi + 1}: {e}")
+        all_shorts = accepted
+
+        if rejected:
+            print(f"\n   ⚠️ {len(rejected)} clip(s) rejected for overlapping previous clips "
+                  f"(kept in 'rejected_clips').")
+
+    if not all_shorts:
+        print("❌ No clips detected across any videos.")
+        return None
+
+    if len(transcripts) > 1:
+        print(f"\n💰 Total cost across {len(transcripts)} videos:")
+        print(f"   - Input tokens:  {total_cost_data['input_tokens']:,}  (${total_cost_data['input_cost']:.6f})")
+        print(f"   - Output tokens: {total_cost_data['output_tokens']:,} (${total_cost_data['output_cost']:.6f})")
+        print(f"   - Grand total:   ${total_cost_data['total_cost']:.6f}")
+
+    return {
+        "shorts":         all_shorts,
+        "rejected_clips": rejected,
+        "cost_analysis":  total_cost_data,
     }
 
 
@@ -1551,7 +1840,11 @@ if __name__ == '__main__':
             print("❌ Error: GEMINI_API_KEY not found in environment variables.")
             sys.exit(1)
             
-        clips_data = detect_clips_stage2(transcripts, dossiers, args.prompt, api_key, args.content_type, used_moments=used_moments, clip_count=args.clip_count, min_duration=args.min_duration, max_duration=args.max_duration)
+        if os.getenv("WINDOWED_CLIP_DETECTION", "0") == "1":
+            print("🪟 Windowed two-pass clip detection enabled (score → detail).")
+            clips_data = detect_clips_windowed(transcripts, dossiers, args.prompt, api_key, args.content_type, used_moments=used_moments, clip_count=args.clip_count, min_duration=args.min_duration, max_duration=args.max_duration)
+        else:
+            clips_data = detect_clips_stage2(transcripts, dossiers, args.prompt, api_key, args.content_type, used_moments=used_moments, clip_count=args.clip_count, min_duration=args.min_duration, max_duration=args.max_duration)
         
         if not clips_data or 'shorts' not in clips_data:
             print("❌ Failed to identify clips.")

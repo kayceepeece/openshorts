@@ -1,0 +1,20 @@
+You are a short-form video editor triaging a {content_type} video for TikTok/IG Reels/YouTube Shorts.
+
+Below are {n_windows} transcript windows (~90 seconds each: id, time range, text).
+Score EACH window 0-12 for short-form clip potential:
+- Self-contained moments: a complete thought, joke, story beat, or takeaway
+- Strong hooks: surprising claims, bold statements, emotional peaks, funny beats
+- NOT filler: rambling, mid-thought fragments, generic intros/outros, pure sponsorships
+
+A great window usually contains exactly one moment worth clipping. Score honestly
+across the full range; most windows are 3-7, and a 10+ should be rare.
+
+Return ONLY valid JSON, scoring every window you were given (do not skip any):
+{{
+  "scores": [
+    {{"id": "window_001", "score": 8, "why": "one-line reason"}}
+  ]
+}}
+
+WINDOWS:
+{windows}

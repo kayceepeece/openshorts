@@ -6,10 +6,12 @@ import time
 from google import genai
 from google.genai import types
 
+from edit_builder import build_filter_string
+
 class VideoEditor:
     def __init__(self, api_key):
         self.client = genai.Client(api_key=api_key)
-        self.model_name = "gemini-3.5-flash" 
+        self.model_name = "gemini-3.8-flash" 
 
     def upload_video(self, video_path):
         """Uploads video to Gemini File API."""
@@ -37,8 +39,13 @@ class VideoEditor:
                 raise Exception("Video processing failed by Gemini.")
             time.sleep(2)
 
-    def get_ffmpeg_filter(self, video_file_obj, duration, fps=30, width=None, height=None, transcript=None):
-        """Asks Gemini for a raw FFmpeg filter string."""
+    def get_ffmpeg_filter(self, video_file_obj, duration, fps=30, width=None, height=None, transcript=None, has_captions=False):
+        """Asks Gemini for an edit decision list, then builds a safe FFmpeg
+        filter string deterministically (see edit_builder.py).
+
+        Returns {"filter_string": ..., "applied_edits": [...]} — the same shape
+        apply_edits() expects. filter_string is None when no edits were chosen.
+        """
         if width is None or height is None:
             # Keep prompt usable even if caller didn't pass dimensions.
             width, height = 1080, 1920
@@ -46,69 +53,40 @@ class VideoEditor:
         transcript_text = json.dumps(transcript) if transcript else "Not available."
 
         prompt = f"""
-        You are an expert FFmpeg video editor. Your task is to generate a complex video filter string to make a short video viral, BUT ONLY apply effects where they make sense contextually.
+        You are an expert short-form video editor. Your task is to decide WHERE and WHAT visual edits to apply to make this short video more engaging — BUT ONLY where they make sense contextually. You do NOT write FFmpeg syntax; you return an edit decision list and a deterministic builder turns it into the filter.
 
         Video Duration: {duration} seconds.
         Video FPS: {fps}
-        Video Resolution (MUST KEEP EXACT): {width}x{height}
-        
+        Video Resolution: {width}x{height}
+
         TRANSCRIPT (Context of what is being said):
         {transcript_text}
 
-        Goal: Enhance the video with dynamic zooms, cuts (simulated with punch-ins), and visual effects to increase retention, but DO NOT overdo it. Random effects are bad. Contextual effects are good.
+        Goal: Enhance the video with dynamic zooms and visual effects to increase retention, but DO NOT overdo it. Random effects are bad. Contextual effects are good.
 
         Instructions:
         1. ANALYZE THE VIDEO AND TRANSCRIPT: Understand the mood, the pacing, and the key moments.
-        2. APPLY EFFECTS ONLY WHEN RELEVANT:
-           - Use "punch-in" zooms (zoompan) to emphasize key points, jokes, or dramatic moments in the speech.
-           - slow zooms to face when the speaker is speaking
-           - Use visual effects (contrast, saturation, sharpness) to highlight mood changes or specific segments.
-           - If nothing significant is happening, keep it simple. It is BETTER to have no effect than a random/distracting one.
+        2. APPLY EFFECTS ONLY WHEN RELEVANT — available edit types:
+           - "zoom_in": slow push-in to emphasize a key point or dramatic moment (1-8s).
+           - "punch_in": quick tighter framing on jokes, punchlines, hard transitions (1-4s).
+           - "zoom_pulse": brief in-and-out emphasis on a single beat (0.5-2s).
+           - "color_pop": boost contrast/saturation on mood shifts or high-energy segments.
+           - "bw_moment": black-and-white for dramatic or serious beats.
+           - "flash": white flash on a hard transition (use sparingly, max 2 per video).
+           - "vignette": subtle edge darkening to focus on the subject in talking-head segments.
+           - If nothing significant is happening, return FEWER edits or NONE. It is BETTER to have no effect than a random/distracting one.
            - Avoid constant motion if the speaker is delivering a serious or steady message.
-        3. Create a single valid FFmpeg filter complex string (for the -vf flag).
-        4. Use filters like `zoompan`, `eq` (contrast), `hue` (saturation/bw), `unsharp`.
-        5. Pacing: Align effects with the rhythm of the speech (from transcript) or visual action.
-        6. CRITICAL SYNTAX RULES:
-           - DO NOT use comparison operators like `<`, `>`, `<=`, `>=` anywhere. They frequently break FFmpeg expression parsing.
-           - USE FFmpeg expression FUNCTIONS instead:
-             - `between(x,a,b)`
-             - `lt(x,y)`, `lte(x,y)`, `gt(x,y)`, `gte(x,y)`
-             - `if(cond,then,else)`
-           - Always wrap expression values in single quotes: `z='...'`, `x='...'`, `y='...'`, `enable='...'`.
-           
-           - FOR `zoompan`: 
-             - Prefer `on` (output frame index) to avoid time-variable quirks.
-             - Convert seconds to frames using FPS={fps}: `frame = seconds * {fps}`.
-             - Use `between(on, startFrame, endFrame)` for segmenting and pacing.
-             - Example:
-              `zoompan=z='1.1*between(on,0,75)+1.3*between(on,76,150)+1.15*between(on,151,300)+1.2*gte(on,301)'`
-             - ALWAYS set zoompan output size to EXACT `{width}x{height}` using `s={width}x{height}`.
-             - ALWAYS set `fps={fps}` and `d=1`.
-             - DO NOT use `scale`, `crop`, `pad` unless you keep EXACT `{width}x{height}` (no aspect ratio changes).
-             
-           - FOR `eq`, `hue`, `curves`, `unsharp` (Visual Effects): 
-             - **DO NOT** use dynamic expressions for parameter values (e.g. `contrast='1+0.5*t'`).
-             - **USE TIMELINE EDITING** via the `enable` option.
-             - Create MULTIPLE filter instances for different time ranges.
-             - **SYNTAX FOR ENABLE:**
-              - **USE** `between(t,start,end)` for clarity and robustness.
-              - **USE** single quotes around the enable expression.
-              - **Example:** `eq=contrast=1.2:enable='between(t,0,3)'`
-              - **Example:** `hue=s=0:enable='between(t,10,12)'`
-             - This is much safer and robust than boolean multiplication.
-        
-        Constraints:
-        - Output JSON with a single key: "filter_string".
-        - The value must be the RAW filter string ready to be passed to `-vf`.
-        - OUTPUT MUST KEEP EXACT RESOLUTION AND ASPECT RATIO: {width}x{height}.
-        - Do NOT output 1280x720 or 1080x1080 unless the input is exactly that.
-        - IMPORTANT: Do NOT include the `-vf` flag itself, just the filter content.
-        - IMPORTANT: Ensure syntax is correct for FFmpeg. 
-        
+        3. Each edit needs: "start" and "end" in seconds (0 <= start < end <= {duration}), and "strength" 0.0-1.0 (higher = stronger; it will be clamped to safe limits).
+        4. At most 12 edits total. Prefer fewer, well-placed edits over many.
+
+        Output JSON with a single key "edits" — a list of edit objects. Output ONLY valid JSON, no explanations.
+
         Output JSON:
-        {{
-            "filter_string": "..."
-        }}
+        {{{{
+            "edits": [
+                {{{{"type": "punch_in", "start": 3.2, "end": 5.0, "strength": 0.7}}}}
+            ]
+        }}}}
         """
 
         print("🤖 Asking Gemini for FFmpeg filter...")
@@ -144,11 +122,25 @@ class VideoEditor:
                 text = text[start_idx:end_idx+1]
             
             print(f"🔍 DEBUG: Cleaned JSON Text:\n{text}")
-                
-            return json.loads(text)
+
+            data = json.loads(text)
         except json.JSONDecodeError:
             print(f"❌ Failed to parse JSON: {response.text}")
             return None
+
+        # Deterministic build: Gemini only decided WHAT/WHEN (edit list);
+        # edit_builder.py turns it into a safe filter string with hard caps.
+        edits = data.get("edits", []) if isinstance(data, dict) else []
+        filter_string, applied = build_filter_string(
+            edits, duration, fps, width, height, has_captions=has_captions
+        )
+        if filter_string is None:
+            print("ℹ️ No edits chosen by the model — keeping original video.")
+            return {"filter_string": None, "applied_edits": []}
+        print(f"🎬 Built filter from {len(applied)} edit(s):")
+        for e in applied:
+            print(f"   - {e['type']} [{e['start']:.2f}-{e['end']:.2f}] strength={e['strength']:.2f}")
+        return {"filter_string": filter_string, "applied_edits": applied}
 
     def get_effects_config(self, video_file_obj, duration, fps=30, width=None, height=None, transcript=None):
         """Asks Gemini for a structured EffectsConfig JSON for Remotion rendering."""
@@ -299,7 +291,7 @@ class VideoEditor:
     def apply_edits(self, input_path, output_path, filter_data):
         """Executes FFmpeg with the generated filter."""
         
-        if not filter_data or "filter_string" not in filter_data:
+        if not filter_data or not filter_data.get("filter_string"):
             print("⚠️ No filter string found. Copying original.")
             subprocess.run(['ffmpeg', '-y', '-i', input_path, '-c', 'copy', output_path])
             return

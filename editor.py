@@ -288,6 +288,65 @@ class VideoEditor:
 
         return s
 
+    @staticmethod
+    def _test_filter(input_path, filter_string, env):
+        """Dry-run the filter on the first 2 seconds (no output written).
+
+        Catches broken filter syntax in seconds instead of failing after a
+        full-length encode. Returns (ok, stderr_tail)."""
+        cmd = [
+            'ffmpeg', '-v', 'error', '-t', '2',
+            '-i', input_path,
+            '-vf', filter_string,
+            '-f', 'null', '-',
+        ]
+        try:
+            result = subprocess.run(
+                [a.encode('utf-8') if isinstance(a, str) else a for a in cmd],
+                env=env, capture_output=True, timeout=120,
+            )
+        except subprocess.TimeoutExpired:
+            return False, "filter dry-run timed out after 120s"
+        if result.returncode == 0:
+            return True, ""
+        stderr_text = (result.stderr or b"").decode(errors="replace")
+        return False, stderr_text[-1500:]
+
+    def _repair_filter(self, filter_string, error_text, width, height):
+        """One self-repair round-trip: show Gemini the FFmpeg error and ask for
+        a corrected filter string. Returns the new string or None."""
+        prompt = f"""
+        The following FFmpeg -vf filter string fails to run.
+
+        FILTER:
+        {filter_string}
+
+        FFMPEG ERROR:
+        {error_text}
+
+        Fix the filter. Keep the same creative intent, obey the same rules as before:
+        - exact output resolution {width}x{height} (zoompan must set s={width}x{height}),
+        - no bare comparison operators (use between/lt/lte/gt/gte),
+        - expression values in single quotes.
+        Output JSON only: {{"filter_string": "..."}}
+        """
+        try:
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(response_mime_type="application/json"),
+            )
+            text = (response.text or "").strip()
+            start_idx = text.find('{')
+            end_idx = text.rfind('}')
+            if start_idx != -1 and end_idx != -1:
+                text = text[start_idx:end_idx + 1]
+            repaired = json.loads(text).get("filter_string")
+            return repaired if isinstance(repaired, str) and repaired.strip() else None
+        except Exception as e:
+            print(f"⚠️ Filter self-repair failed: {e}")
+            return None
+
     def apply_edits(self, input_path, output_path, filter_data):
         """Executes FFmpeg with the generated filter."""
         
@@ -326,8 +385,34 @@ class VideoEditor:
             if "setsar=" not in filter_string:
                 filter_string = f"{filter_string},setsar=1"
 
+        # Use explicit environment with UTF-8 to avoid ascii errors in subprocess
+        env = os.environ.copy()
+        # On some minimal docker images, we need to ensure we use a UTF-8 locale
+        # Try C.UTF-8 first, fallback to en_US.UTF-8 if available, but C.UTF-8 is usually safer for minimal
+        env["LANG"] = "C.UTF-8"
+        env["LC_ALL"] = "C.UTF-8"
+
+        # Dry-run the filter on 2 seconds before committing to a full encode;
+        # on failure, give Gemini one self-repair attempt with the real error.
+        ok, error_text = self._test_filter(input_path, filter_string, env)
+        if not ok:
+            print(f"⚠️ AI filter failed dry-run: {error_text}")
+            repaired = self._repair_filter(filter_string, error_text, w or 1080, h or 1920)
+            if repaired:
+                repaired = self._sanitize_filter_string(repaired)
+                if w and h:
+                    repaired = self._enforce_zoompan_output_size(repaired, w, h)
+                    if "setsar=" not in repaired:
+                        repaired = f"{repaired},setsar=1"
+                ok, error_text = self._test_filter(input_path, repaired, env)
+                if ok:
+                    print("🔧 Self-repaired AI filter passed dry-run.")
+                    filter_string = repaired
+            if not ok:
+                raise RuntimeError(f"AI filter failed validation even after self-repair: {error_text}")
+
         print(f"🎬 Executing AI Filter: {filter_string}")
-        
+
         cmd = [
             'ffmpeg', '-y',
             '-i', input_path,
@@ -338,12 +423,6 @@ class VideoEditor:
             output_path
         ]
         
-        # Use explicit environment with UTF-8 to avoid ascii errors in subprocess
-        env = os.environ.copy()
-        # On some minimal docker images, we need to ensure we use a UTF-8 locale
-        # Try C.UTF-8 first, fallback to en_US.UTF-8 if available, but C.UTF-8 is usually safer for minimal
-        env["LANG"] = "C.UTF-8"
-        env["LC_ALL"] = "C.UTF-8"
         
         try:
             # We must encode arguments if filesystem is ascii but we have unicode chars

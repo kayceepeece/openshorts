@@ -1247,67 +1247,17 @@ def process_video_to_vertical(input_video, final_output_video):
     return True
 
 def transcribe_video(video_path, duration=None):
-    print("🎙️  Transcribing video with Faster-Whisper (CPU Optimized)...")
-    from faster_whisper import WhisperModel
-    
-    cpu_threads = int(os.environ.get("WHISPER_CPU_THREADS", "2"))
-    
-    # Run on CPU with INT8 quantization for speed. cpu_threads is capped low to
-    # bound peak memory on small VPS boxes (each decode thread allocates buffers).
-    model = WhisperModel("base", device="cpu", compute_type="int8", cpu_threads=cpu_threads)
-    
-    # vad_filter skips long silent stretches (large memory+time win on long videos),
-    # beam_size=1 (greedy) keeps the decoder's working set minimal vs beam search.
-    segments, info = model.transcribe(
-        video_path,
-        word_timestamps=True,
-        vad_filter=True,
-        beam_size=1,
-        condition_on_previous_text=True,
-        vad_parameters={"min_silence_duration_ms": 500}
-    )
-    
-    print(f"   Detected language '{info.language}' with probability {info.language_probability:.2f}")
-    
-    # Convert to openai-whisper compatible format
-    transcript_segments = []
-    full_text = ""
-    
-    for segment in segments:
-        # Emit a machine-readable progress marker (consumed by the API status poller)
-        if duration and duration > 0:
-            pct = min(100, int((segment.end / duration) * 100))
-            print(f"PROGRESS:{pct}")
-        # Print progress to keep user informed (and prevent timeouts feeling)
-        print(f"   [{segment.start:.2f}s -> {segment.end:.2f}s] {segment.text}")
-        
-        seg_dict = {
-            'text': segment.text,
-            'start': segment.start,
-            'end': segment.end,
-            'words': []
-        }
-        
-        if segment.words:
-            for word in segment.words:
-                seg_dict['words'].append({
-                    'word': word.word,
-                    'start': word.start,
-                    'end': word.end,
-                    'probability': word.probability
-                })
-        
-        transcript_segments.append(seg_dict)
-        full_text += segment.text + " "
-    
-    if duration and duration > 0:
-        print("PROGRESS:100")
-    
-    return {
-        'text': full_text.strip(),
-        'segments': transcript_segments,
-        'language': info.language
-    }
+    """Transcribe via transcribe_backends (TRANSCRIBE_BACKEND=parakeet|whisper).
+
+    Keeps this function's contract: {'text', 'segments', 'language'} plus the
+    PROGRESS:{pct} markers the API status poller consumes. Backend selection
+    and all fallback logic live in transcribe_backends.transcribe_media.
+    """
+    from transcribe_backends import transcribe_media
+    backend = os.environ.get("TRANSCRIBE_BACKEND", "whisper").strip().lower()
+    label = "Parakeet" if backend == "parakeet" else "Faster-Whisper (CPU Optimized)"
+    print(f"🎙️  Transcribing video with {label}...")
+    return transcribe_media(video_path, duration=duration)
 
 def get_viral_clips(transcript_result, video_duration, content_type='general'):
     print("🤖  Analyzing with Gemini...")

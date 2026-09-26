@@ -2438,11 +2438,21 @@ async def add_subtitles(req: SubtitleRequest):
         # 2. Burn Subtitles
         # Run in thread pool
         def run_burn():
+             # On SPLIT stretches captions sit on the seam between the
+             # stacked speakers (layout sidecar written by the reframe).
+             split_ranges = None
+             try:
+                 import layout_ranges  # lazy — tiny module
+                 split_ranges = layout_ranges.split_ranges(
+                     layout_ranges.read(input_path)) or None
+             except Exception:
+                 pass
              burn_subtitles(input_path, srt_path, output_path,
                            alignment=req.position, fontsize=req.font_size,
                            font_name=req.font_name, font_color=req.font_color,
                            border_color=req.border_color, border_width=req.border_width,
-                           bg_color=req.bg_color, bg_opacity=req.bg_opacity)
+                           bg_color=req.bg_color, bg_opacity=req.bg_opacity,
+                           split_ranges=split_ranges)
         
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(None, run_burn)

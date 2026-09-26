@@ -1,4 +1,5 @@
 import time
+import threading
 import cv2
 import subprocess
 import argparse
@@ -11,6 +12,13 @@ from tqdm import tqdm
 from google import genai
 from dotenv import load_dotenv
 import json
+
+# Per-scene layout system (item 5): SPLIT/SCREENCAST/INSET/WIDE/PANEL.
+import layout_picker
+import layout_ranges
+import split_layout
+import screencast_layout
+import panel_layout
 
 # Windowed clip-selection helpers (ported from upstream): word-snapping,
 # scoring windows, overlap dedupe, score-based trimming. Stdlib-only.
@@ -193,6 +201,10 @@ These are hard constraints; do not pick moments inside or spanning these ranges.
 # from pulling in torch/ultralytics (large memory cost on small VPS boxes).
 YOLO_MODEL_PATH = os.environ.get("YOLO_MODEL_PATH", "yolov8n.pt")
 _yolo_model = None
+
+# Serializes MediaPipe inference: the detector object is not thread-safe, and
+# the screencast layout's full-resolution pass shares it with the frame loop.
+DETECT_LOCK = threading.Lock()
 
 def get_yolo_model():
     """Load (and cache) the YOLO model on first call."""
@@ -422,7 +434,8 @@ def detect_face_candidates(frame):
     """
     height, width, _ = frame.shape
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    results = get_face_detection().process(rgb_frame)
+    with DETECT_LOCK:
+        results = get_face_detection().process(rgb_frame)
     
     candidates = []
     
@@ -559,6 +572,167 @@ def analyze_scenes_strategy(video_path, scenes):
             
     cap.release()
     return strategies
+
+def analyze_scenes_layout(video_path, scenes, strategies):
+    """Upgrade per-scene TRACK/GENERAL verdicts to richer layouts.
+
+    Runs after analyze_scenes_strategy and only ever upgrades GENERAL scenes
+    (plus letting SCREENCAST win over SPLIT where both qualify):
+
+      - SPLIT: two coexisting speakers stacked one above the other.
+      - PANEL: 3-4 coexisting people tiled into a 2x2 grid.
+      - SCREENCAST: full-width content stacked over the presenter.
+      - WIDE: full-width content with no presenter (blurred bed, no side crop).
+      - INSET is a known strategy label but is produced by a webcam-inset
+        detector this repo does not ship; the renderer still handles the
+        label (as a presenter-over-content stack) if a sidecar names it.
+
+    Heuristic detectors run by default (their modules gate on SPLIT_LAYOUT /
+    PANEL_LAYOUT / SCREENCAST_LAYOUT, all default-on). The Gemini
+    layout_picker only adds modules when AUTO_LAYOUT=1 (or logs in shadow
+    mode) and never overrides an explicit choice.
+
+    Returns (strategies, splits, panels, screencasts) where splits maps scene
+    index -> (left_centre, right_centre), panels maps scene index -> [centres],
+    and screencasts maps scene index -> ('SCREENCAST'|'WIDE'|'INSET', centre).
+    """
+    strategies = list(strategies)
+    splits = {}
+    panels = {}
+    screencasts = {}
+
+    try:
+        duration = get_video_duration(video_path)
+    except Exception:
+        duration = 0.0
+    try:
+        layout_picker.pick_and_apply(video_path, duration or 0.0)
+    except Exception as e:
+        print(f"   ⚠️ Layout picker failed ({e}) — keeping heuristic routing.")
+
+    try:
+        for scene_idx, centres in split_layout.detect_split_scenes(
+                video_path, scenes, strategies).items():
+            if scene_idx < len(strategies) and strategies[scene_idx] == 'GENERAL':
+                strategies[scene_idx] = 'SPLIT'
+                splits[scene_idx] = centres
+        if splits:
+            print(f"   🪞 SPLIT layout on {len(splits)} scene(s)")
+    except Exception as e:
+        print(f"   ⚠️ Split detection failed ({e}) — keeping base strategies.")
+
+    try:
+        for scene_idx, centres in panel_layout.detect_panel_scenes(
+                video_path, scenes, strategies).items():
+            if scene_idx < len(strategies) and strategies[scene_idx] == 'GENERAL':
+                strategies[scene_idx] = 'PANEL'
+                panels[scene_idx] = centres
+        if panels:
+            print(f"   🧩 PANEL layout on {len(panels)} scene(s)")
+    except Exception as e:
+        print(f"   ⚠️ Panel detection failed ({e}) — keeping base strategies.")
+
+    # SCREENCAST wins over SPLIT on the rare scene that qualifies for both:
+    # two faces beside a chart still means the chart is what the shot is about.
+    try:
+        content_ranges = screencast_layout.detect_content_ranges(
+            video_path, duration or 0.0)
+    except Exception as e:
+        print(f"   ⚠️ Content-range detection failed ({e}) — no screen layouts.")
+        content_ranges = []
+    if content_ranges:
+        try:
+            for scene_idx, (plan, centre) in screencast_layout.detect_screencast_scenes(
+                    video_path, scenes, strategies, content_ranges).items():
+                if scene_idx >= len(strategies):
+                    continue
+                strategies[scene_idx] = plan
+                splits.pop(scene_idx, None)
+                panels.pop(scene_idx, None)
+                if plan in ('SCREENCAST', 'INSET'):
+                    screencasts[scene_idx] = (plan, centre)
+            n_screen = sum(1 for p, _ in screencasts.values() if p == 'SCREENCAST')
+            n_wide = sum(1 for s in strategies if s == 'WIDE')
+            if n_screen:
+                print(f"   🖥️ SCREENCAST layout on {n_screen} scene(s)")
+            if n_wide:
+                print(f"   📐 Full-width layout on {n_wide} scene(s)")
+        except Exception as e:
+            print(f"   ⚠️ Screencast routing failed ({e}) — keeping base strategies.")
+
+    return strategies, splits, panels, screencasts
+
+def _crop_resize(frame, box, out_w, out_h):
+    """Crop ``box`` = (w, h, x, y) from frame and scale to (out_w, out_h)."""
+    w, h, x, y = (int(v) for v in box[:4])
+    fh, fw = frame.shape[:2]
+    x = max(0, min(x, fw - 1))
+    y = max(0, min(y, fh - 1))
+    w = max(2, min(w, fw - x))
+    h = max(2, min(h, fh - y))
+    crop = frame[y:y + h, x:x + w]
+    return cv2.resize(crop, (out_w, out_h), interpolation=cv2.INTER_AREA)
+
+def _pad_to(frame, out_w, out_h):
+    """Bottom/right black pad to (out_w, out_h), mirroring the filtergraphs."""
+    h, w = frame.shape[:2]
+    if h == out_h and w == out_w:
+        return frame
+    canvas = np.zeros((out_h, out_w, 3), dtype=frame.dtype)
+    canvas[:min(h, out_h), :min(w, out_w)] = frame[:out_h, :out_w]
+    return canvas
+
+def render_split_frame(frame, left_centre, right_centre, out_w, out_h,
+                       orig_w, orig_h):
+    """NumPy equivalent of split_layout.split_filtergraph: two speaker crops
+    stacked, left-hand speaker on top."""
+    top_box = split_layout.split_geometry(orig_w, orig_h, out_w, out_h, left_centre)
+    bot_box = split_layout.split_geometry(orig_w, orig_h, out_w, out_h, right_centre)
+    half_h = top_box[4]
+    top = _crop_resize(frame, top_box, out_w, half_h)
+    bot = _crop_resize(frame, bot_box, out_w, half_h)
+    return _pad_to(np.vstack([top, bot]), out_w, out_h)
+
+def render_screencast_frame(frame, face_centre, out_w, out_h, orig_w, orig_h):
+    """NumPy equivalent of screencast_layout.screencast_filtergraph:
+    full-width content above, face-framed speaker below."""
+    content_h, speaker_h = screencast_layout.content_bands(orig_w, orig_h, out_w, out_h)
+    content = cv2.resize(frame, (out_w, content_h), interpolation=cv2.INTER_AREA)
+    spk_box = screencast_layout.speaker_crop(orig_w, orig_h, out_w, speaker_h, face_centre)
+    speaker = _crop_resize(frame, spk_box, out_w, speaker_h)
+    return _pad_to(np.vstack([content, speaker]), out_w, out_h)
+
+def render_panel_frame(frame, centres, out_w, out_h, orig_w, orig_h):
+    """NumPy equivalent of panel_layout.panel_filtergraph: 3-4 people tiled
+    into a 2x2 grid (a trio's fourth cell holds the letterboxed wide shot)."""
+    cols, rows, tile_w, tile_h = panel_layout.tile_grid(len(centres), out_w, out_h)
+    gaps = panel_layout.neighbour_gaps(centres)
+    tiles = []
+    for centre, gap in zip(centres, gaps):
+        box = panel_layout.panel_geometry(orig_w, orig_h, tile_w, tile_h, centre,
+                                           neighbour_gap=gap)
+        tiles.append(_crop_resize(frame, box, tile_w, tile_h))
+    if len(tiles) == 3:
+        fh, fw = frame.shape[:2]
+        wide_h = max(2, int(round(tile_w * fh / float(fw))) - (int(round(tile_w * fh / float(fw))) % 2))
+        if wide_h > tile_h:
+            wide_h = tile_h - (tile_h % 2)
+        wide = cv2.resize(frame, (tile_w, wide_h), interpolation=cv2.INTER_AREA)
+        cell = np.zeros((tile_h, tile_w, 3), dtype=frame.dtype)
+        y0 = (tile_h - wide_h) // 2
+        cell[y0:y0 + wide_h] = wide
+        tiles.append(cell)
+    top = np.hstack(tiles[0:2])
+    bot = np.hstack(tiles[2:4])
+    return _pad_to(np.vstack([top, bot]), out_w, out_h)
+
+def render_inset_frame(frame, face_centre, out_w, out_h, orig_w, orig_h):
+    """INSET fallback without the webcam-inset detector: a known presenter
+    stacks over the full-width screen (like SCREENCAST), otherwise the
+    content keeps its full width over a blurred bed (like WIDE)."""
+    if face_centre is not None:
+        return render_screencast_frame(frame, face_centre, out_w, out_h, orig_w, orig_h)
+    return create_general_frame(frame, out_w, out_h)
 
 def detect_scenes(video_path):
     """Detect scenes via the scene_detection module: TransNetV2 neural
@@ -807,6 +981,47 @@ def process_video_to_vertical(input_video, final_output_video):
     print("\n   🤖 Step 3: Analyzing Scenes for Strategy (Single vs Group)...")
     scene_strategies = analyze_scenes_strategy(input_video, scenes)
     # scene_strategies is a list of 'TRACK' or 'General' corresponding to scenes
+
+    print("\n   🎛️ Step 3b: Upgrading Scenes to Layouts (SPLIT/PANEL/SCREENCAST/WIDE)...")
+    scene_strategies, split_scenes, panel_scenes, screencast_scenes = analyze_scenes_layout(
+        input_video, scenes, scene_strategies)
+
+    # Per-scene render plans: static crop boxes are precomputed once (they
+    # depend only on the source geometry and the detected centres, not on the
+    # frame content), so the frame loop just crops/resizes/stacks.
+    scene_plans = []
+    for i, strategy in enumerate(scene_strategies):
+        plan = (strategy, None)
+        try:
+            if strategy == 'SPLIT' and i in split_scenes:
+                left, right = split_scenes[i]
+                top_box = split_layout.split_geometry(
+                    original_width, original_height, OUTPUT_WIDTH, OUTPUT_HEIGHT, left)
+                bot_box = split_layout.split_geometry(
+                    original_width, original_height, OUTPUT_WIDTH, OUTPUT_HEIGHT, right)
+                plan = ('SPLIT', (top_box, bot_box))
+            elif strategy == 'PANEL' and i in panel_scenes:
+                centres = panel_scenes[i]
+                cols, rows, tile_w, tile_h = panel_layout.tile_grid(
+                    len(centres), OUTPUT_WIDTH, OUTPUT_HEIGHT)
+                gaps = panel_layout.neighbour_gaps(centres)
+                boxes = [panel_layout.panel_geometry(
+                    original_width, original_height, tile_w, tile_h, c,
+                    neighbour_gap=g) for c, g in zip(centres, gaps)]
+                plan = ('PANEL', (tile_w, tile_h, boxes))
+            elif strategy in ('SCREENCAST', 'INSET') and i in screencast_scenes:
+                _plan, centre = screencast_scenes[i]
+                if centre is not None:
+                    content_h, speaker_h = screencast_layout.content_bands(
+                        original_width, original_height, OUTPUT_WIDTH, OUTPUT_HEIGHT)
+                    spk_box = screencast_layout.speaker_crop(
+                        original_width, original_height, OUTPUT_WIDTH, speaker_h, centre)
+                    plan = (strategy, (content_h, speaker_h, spk_box))
+                else:
+                    plan = (strategy, None)
+        except Exception as e:
+            print(f"   ⚠️ Layout plan failed for scene {i} ({e}) — using {strategy} cameraman path.")
+        scene_plans.append(plan)
     
     print("\n   ✂️ Step 4: Processing video frames...")
     
@@ -847,10 +1062,57 @@ def process_video_to_vertical(input_video, final_output_video):
             
             # Determine Strategy for current frame based on scene
             current_strategy = scene_strategies[current_scene_index] if current_scene_index < len(scene_strategies) else 'TRACK'
-            
+            current_plan = scene_plans[current_scene_index] if current_scene_index < len(scene_plans) else ('TRACK', None)
+
             # Apply Strategy
-            if current_strategy == 'GENERAL':
-                # "Plano General" -> Blur Background + Fit Width
+            if current_strategy == 'SPLIT' and current_plan[1] is not None:
+                # Two speakers stacked one above the other (split filtergraph geometry)
+                top_box, bot_box = current_plan[1]
+                half_h = top_box[4]
+                top = _crop_resize(frame, top_box, OUTPUT_WIDTH, half_h)
+                bot = _crop_resize(frame, bot_box, OUTPUT_WIDTH, half_h)
+                output_frame = _pad_to(np.vstack([top, bot]), OUTPUT_WIDTH, OUTPUT_HEIGHT)
+                cameraman.current_center_x = original_width / 2
+                cameraman.target_center_x = original_width / 2
+
+            elif current_strategy == 'PANEL' and current_plan[1] is not None:
+                # 3-4 people tiled into a 2x2 grid (panel filtergraph geometry)
+                tile_w, tile_h, boxes = current_plan[1]
+                tiles = [_crop_resize(frame, b, tile_w, tile_h) for b in boxes]
+                if len(tiles) == 3:
+                    fh, fw = frame.shape[:2]
+                    wide_h = max(2, int(round(tile_w * fh / float(fw))))
+                    wide_h -= wide_h % 2
+                    if wide_h > tile_h:
+                        wide_h = tile_h - (tile_h % 2)
+                    wide = cv2.resize(frame, (tile_w, wide_h), interpolation=cv2.INTER_AREA)
+                    cell = np.zeros((tile_h, tile_w, 3), dtype=frame.dtype)
+                    y0 = (tile_h - wide_h) // 2
+                    cell[y0:y0 + wide_h] = wide
+                    tiles.append(cell)
+                output_frame = _pad_to(np.vstack([np.hstack(tiles[0:2]),
+                                                  np.hstack(tiles[2:4])]),
+                                       OUTPUT_WIDTH, OUTPUT_HEIGHT)
+                cameraman.current_center_x = original_width / 2
+                cameraman.target_center_x = original_width / 2
+
+            elif current_strategy in ('SCREENCAST', 'INSET') and current_plan[1] is not None:
+                # Full-width content above, face-framed speaker below
+                content_h, speaker_h, spk_box = current_plan[1]
+                content = cv2.resize(frame, (OUTPUT_WIDTH, content_h),
+                                     interpolation=cv2.INTER_AREA)
+                speaker = _crop_resize(frame, spk_box, OUTPUT_WIDTH, speaker_h)
+                output_frame = _pad_to(np.vstack([content, speaker]),
+                                       OUTPUT_WIDTH, OUTPUT_HEIGHT)
+                cameraman.current_center_x = original_width / 2
+                cameraman.target_center_x = original_width / 2
+
+            elif current_strategy in ('GENERAL', 'WIDE') or (
+                    current_strategy in ('SCREENCAST', 'INSET') and current_plan[1] is None):
+                # "Plano General" -> Blur Background + Fit Width.
+                # WIDE is the same bed with side-cropping disabled, which is
+                # exactly what create_general_frame does (fit full width).
+                # SCREENCAST/INSET without a presenter centre fall back here too.
                 output_frame = create_general_frame(frame, OUTPUT_WIDTH, OUTPUT_HEIGHT)
                 
                 # Reset cameraman/tracker so they don't drift while inactive
@@ -926,6 +1188,22 @@ def process_video_to_vertical(input_video, final_output_video):
         print("\n   ❌ Final merge failed.")
         print("   Stderr:", e.stderr.decode())
         return False
+
+    # Tell the caption pass which stretches use which layout (see
+    # layout_ranges): times are in the CLIP's own timeline, which is also the
+    # timeline captions are laid on.
+    try:
+        layout_fps = float(fps)
+        layout_list = []
+        for i, (s_f, e_f) in enumerate(scene_boundaries):
+            s = max(0, s_f) / layout_fps
+            e = min(e_f, frame_number) / layout_fps
+            strategy = scene_strategies[i] if i < len(scene_strategies) else 'TRACK'
+            if e > s:
+                layout_list.append((s, e, strategy))
+        layout_ranges.write(final_output_video, layout_list)
+    except Exception as e:
+        print(f"   ⚠️ Could not write layout sidecar ({e})")
 
     # Clean up temp files
     if os.path.exists(temp_video_output): os.remove(temp_video_output)

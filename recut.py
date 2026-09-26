@@ -287,8 +287,21 @@ def perform_recut(*, input_path, segments, output_dir, clean_name,
             from main import process_video_to_vertical  # heavy — lazy
             if not process_video_to_vertical(work_path, out_path):
                 raise RuntimeError("reframe failed on the recut clip")
+            # process_video_to_vertical writes a fresh layout sidecar itself.
         else:
             os.rename(work_path, out_path)
+            # Fast path never reframes, so carry the canonical clip's layout
+            # ranges across the new cut (see layout_ranges.remap).
+            try:
+                import layout_ranges  # lazy — tiny module
+                remapped = layout_ranges.remap(
+                    layout_ranges.read(input_path), segments)
+                if remapped:
+                    layout_ranges.write(
+                        out_path,
+                        [(r["start"], r["end"], r["layout"]) for r in remapped])
+            except Exception:
+                pass
 
         served_name = out_name
         if burn_captions and captions_transcript \
@@ -302,7 +315,17 @@ def perform_recut(*, input_path, segments, output_dir, clean_name,
                 captioned_name = f"subtitled_{int(time.time())}_{out_name}"
                 captioned_path = os.path.join(output_dir, captioned_name)
                 try:
-                    burn_subtitles(out_path, srt_path, captioned_path)
+                    # Captions sit on the seam between stacked speakers on
+                    # SPLIT stretches (see layout_ranges.split_ranges).
+                    split_ranges = None
+                    try:
+                        import layout_ranges  # lazy — tiny module
+                        split_ranges = layout_ranges.split_ranges(
+                            layout_ranges.read(out_path)) or None
+                    except Exception:
+                        pass
+                    burn_subtitles(out_path, srt_path, captioned_path,
+                                   split_ranges=split_ranges)
                     served_name = captioned_name
                 finally:
                     if os.path.exists(srt_path):

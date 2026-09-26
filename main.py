@@ -586,15 +586,16 @@ def analyze_scenes_layout(video_path, scenes, strategies):
     Runs after analyze_scenes_strategy and only ever upgrades GENERAL scenes
     (plus letting SCREENCAST win over SPLIT where both qualify):
 
-      - SPLIT: two coexisting speakers stacked one above the other.
+      - SPLIT: two coexisting speakers stacked one above the other — kept
+        only when active_speaker (mouth-motion + audio energy) says both
+        actually take turns; otherwise the scene stays GENERAL.
       - PANEL: 3-4 coexisting people tiled into a 2x2 grid.
       - SCREENCAST: full-width content stacked over the presenter.
       - WIDE: full-width content with no presenter (blurred bed, no side crop).
-      - INSET is a known strategy label but is produced by a webcam-inset
-        detector this repo does not ship; the renderer still handles the
-        label (as a presenter-over-content stack) if a sidecar names it.
-        No code path in this repo emits INSET today — the render branches
-        for it are reserved for a future detector, not live logic.
+      - INSET: a screen recording with a corner webcam (camera_inset): the
+        screen keeps its full width and the person stays readable. The
+        renderer handles the label (presenter-over-content stack, or the
+        full-width bed when no presenter centre survived).
 
     Heuristic detectors run by default (their modules gate on SPLIT_LAYOUT /
     PANEL_LAYOUT / SCREENCAST_LAYOUT, all default-on). The Gemini
@@ -630,6 +631,39 @@ def analyze_scenes_layout(video_path, scenes, strategies):
     except Exception as e:
         print(f"   ⚠️ Split detection failed ({e}) — keeping base strategies.")
 
+    # Active-speaker gate (active_speaker): geometry alone stacks scenes where
+    # one person sits silent for the whole scene. Only keep SPLIT when
+    # mouth-motion + audio energy says both actually take turns. Undecided
+    # (no attributed windows) or any failure keeps SPLIT — a new signal must
+    # never crash a clip job or cost a good stack.
+    try:
+        import active_speaker
+        if splits:
+            import cv2 as _cv2spk
+            _spk_cap = _cv2spk.VideoCapture(video_path)
+            _spk_fps = _spk_cap.get(_cv2spk.CAP_PROP_FPS) or 30.0
+            _spk_cap.release()
+            for scene_idx in list(splits):
+                try:
+                    s_f = scenes[scene_idx][0].get_frames()
+                    e_f = scenes[scene_idx][1].get_frames()
+                    verdicts = active_speaker.verdicts_for_scene(
+                        video_path, s_f, e_f, _spk_fps, splits[scene_idx])
+                    if not active_speaker.has_evidence(verdicts):
+                        continue  # no evidence — keep SPLIT
+                    if not active_speaker.is_conversation(verdicts):
+                        a, b = active_speaker.shares(verdicts)
+                        print(f"   🔇 Scene {scene_idx}: one speaker holds the "
+                              f"floor ({max(a, b):.0%}) — not stacking")
+                        splits.pop(scene_idx, None)
+                        if scene_idx < len(strategies):
+                            strategies[scene_idx] = 'GENERAL'
+                except Exception as e:
+                    print(f"   ⚠️ Speaker gate skipped for scene {scene_idx} "
+                          f"({e}) — keeping SPLIT.")
+    except Exception as e:
+        print(f"   ⚠️ Speaker gate failed ({e}) — keeping base strategies.")
+
     try:
         for scene_idx, centres in panel_layout.detect_panel_scenes(
                 video_path, scenes, strategies).items():
@@ -651,19 +685,43 @@ def analyze_scenes_layout(video_path, scenes, strategies):
         content_ranges = []
     if content_ranges:
         try:
+            # Webcam-inset check (camera_inset): a screen recording with a
+            # corner camera gets INSET so the screen keeps its full width and
+            # the person stays readable. Settled geometrically (anchored
+            # corner + person detection + stability gate), not by Gemini, and
+            # detected once per video. Any failure keeps the SCREENCAST/WIDE
+            # routing below — never a crash.
+            try:
+                import camera_inset
+                inset = camera_inset.detect(video_path)
+            except Exception as e:
+                print(f"   ⚠️ Inset check failed ({e}) — using the screen layouts.")
+                inset = None
+            if inset:
+                print(f"   📹 Webcam inset at {inset}")
             for scene_idx, (plan, centre) in screencast_layout.detect_screencast_scenes(
                     video_path, scenes, strategies, content_ranges).items():
                 if scene_idx >= len(strategies):
                     continue
+                # An inset beats both screen plans: it is the only routing
+                # that can show the screen whole AND the person at a readable
+                # size. The per-scene centre is dropped (upstream does the
+                # same): the box is video-global, and the renderer falls back
+                # to the full-width bed for INSET without a centre.
+                if inset:
+                    plan, centre = 'INSET', None
                 strategies[scene_idx] = plan
                 splits.pop(scene_idx, None)
                 panels.pop(scene_idx, None)
                 if plan in ('SCREENCAST', 'INSET'):
                     screencasts[scene_idx] = (plan, centre)
             n_screen = sum(1 for p, _ in screencasts.values() if p == 'SCREENCAST')
+            n_inset = sum(1 for p, _ in screencasts.values() if p == 'INSET')
             n_wide = sum(1 for s in strategies if s == 'WIDE')
             if n_screen:
                 print(f"   🖥️ SCREENCAST layout on {n_screen} scene(s)")
+            if n_inset:
+                print(f"   📹 Camera-inset layout on {n_inset} scene(s)")
             if n_wide:
                 print(f"   📐 Full-width layout on {n_wide} scene(s)")
         except Exception as e:

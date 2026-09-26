@@ -1,9 +1,10 @@
 import React, { useState, useEffect } from 'react';
-import { Download, Share2, Youtube, Instagram, Video, CheckCircle, AlertCircle, Loader2, Wand2, Type, Calendar, Languages } from 'lucide-react';
+import { Download, Share2, Youtube, Instagram, Video, CheckCircle, AlertCircle, Loader2, Wand2, Type, Calendar, Languages, Scissors } from 'lucide-react';
 import { getApiUrl } from '../config';
 import SubtitleModal from './SubtitleModal';
 import HookModal from './HookModal';
 import TranslateModal from './TranslateModal';
+import RecutModal from './RecutModal';
 import ModalShell from './ModalShell';
 import { renderInBrowser } from '../lib/renderInBrowser';
 
@@ -36,6 +37,13 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
     const [showSubtitleModal, setShowSubtitleModal] = useState(false);
     const [showHookModal, setShowHookModal] = useState(false);
     const [showTranslateModal, setShowTranslateModal] = useState(false);
+    const [showRecutModal, setShowRecutModal] = useState(false);
+    const [isRecutting, setIsRecutting] = useState(false);
+    // After a recut the clip's source window changes; keep the card in sync
+    // without waiting for a parent refetch.
+    const [timingOverride, setTimingOverride] = useState(null);
+    const effStart = timingOverride ? timingOverride.start : clip.start;
+    const effEnd = timingOverride ? timingOverride.end : clip.end;
     const videoRef = React.useRef(null);
     const originalVideoUrl = getApiUrl(clip.video_url); // Never changes — used for Remotion previews
     const [currentVideoUrl, setCurrentVideoUrl] = useState(originalVideoUrl);
@@ -361,6 +369,18 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
         }
     };
 
+    const handleRecut = async (data) => {
+        // data: { new_video_url, start, end, render_path, duration }
+        setIsRecutting(false);
+        if (data.new_video_url) {
+            setCurrentVideoUrl(getApiUrl(data.new_video_url));
+            if (videoRef.current) videoRef.current.load();
+        }
+        if (data.start !== undefined && data.end !== undefined) {
+            setTimingOverride({ start: data.start, end: data.end });
+        }
+    };
+
     const handleDownload = async () => {
         try {
             const response = await fetch(currentVideoUrl);
@@ -393,7 +413,7 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
                         playsInline
                         onPlay={() => {
                             const currentTime = videoRef.current ? videoRef.current.currentTime : 0;
-                            onPlay && onPlay(clip.start + currentTime);
+                            onPlay && onPlay((effStart || 0) + currentTime);
                         }}
                         onPause={() => onPause && onPause()}
                         onEnded={() => {
@@ -427,7 +447,7 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
                             {clip.video_title_for_youtube_short || "Viral Clip Generated"}
                         </h3>
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
-                            <span className="os-chip os-chip-default">{Math.floor(clip.end - clip.start)}s</span>
+                            <span className="os-chip os-chip-default">{effStart !== undefined && effEnd !== undefined ? Math.floor(effEnd - effStart) : Math.floor(clip.end - clip.start)}s</span>
                             <span className="os-chip os-chip-default">#shorts</span>
                             <span className="os-chip os-chip-default">#viral</span>
                         </div>
@@ -462,6 +482,7 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
 
                     {/* Action footer */}
                     <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 6, paddingTop: '0.625rem', borderTop: '1px solid var(--border)', marginTop: 'auto' }}>
+                        {actionBtn(() => setShowRecutModal(true), isRecutting ? 'Cutting...' : 'Edit Cut', Scissors, isRecutting, 'secondary')}
                         {actionBtn(handleAutoEdit, isEditing ? 'Editing...' : 'Auto Edit', Wand2, isEditing, 'secondary')}
                         {actionBtn(() => setShowSubtitleModal(true), isSubtitling ? 'Adding...' : 'Subtitles', Type, isSubtitling, 'secondary')}
                         {actionBtn(() => setShowHookModal(true), isHooking ? 'Adding...' : 'Viral Hook', Wand2, isHooking, 'secondary')}
@@ -574,6 +595,15 @@ export default function ResultCard({ clip, index, jobId, uploadPostKey, uploadUs
                     {posting ? <><Loader2 size={14} className="animate-spin" /> {isScheduling ? 'Scheduling...' : 'Publishing...'}</> : <><Share2 size={14} /> {isScheduling ? 'Schedule Post' : 'Publish Now'}</>}
                 </button>
             </ModalShell>
+
+            <RecutModal
+                isOpen={showRecutModal}
+                onClose={() => setShowRecutModal(false)}
+                jobId={jobId}
+                clipIndex={index}
+                videoUrl={currentVideoUrl}
+                onRecut={handleRecut}
+            />
 
             <SubtitleModal
                 isOpen={showSubtitleModal}

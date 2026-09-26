@@ -561,15 +561,12 @@ def analyze_scenes_strategy(video_path, scenes):
     return strategies
 
 def detect_scenes(video_path):
-    from scenedetect import open_video, SceneManager
-    from scenedetect.detectors import ContentDetector
-    video = open_video(video_path)
-    scene_manager = SceneManager()
-    scene_manager.add_detector(ContentDetector())
-    scene_manager.detect_scenes(video=video)
-    scene_list = scene_manager.get_scene_list()
-    fps = video.frame_rate
-    return scene_list, fps
+    """Detect scenes via the scene_detection module: TransNetV2 neural
+    shot-boundary detector by default, with automatic fallback to the
+    legacy PySceneDetect ContentDetector. SCENE_ENGINE=pyscenedetect
+    forces the legacy engine."""
+    from scene_detection import detect_scenes as _detect
+    return _detect(video_path)
 
 def get_video_resolution(video_path):
     cap = cv2.VideoCapture(video_path)

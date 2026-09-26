@@ -3,3 +3,6 @@
 # and pulls in jax/jaxlib (~380M). Install separately if face tracking is needed:
 #   pip install --no-cache-dir -r requirements-optional.txt
 mediapipe==0.10.14
+# TransNetV2 neural scene detection (scene_detection.py); falls back to
+# PySceneDetect if missing. torch is already in the main requirements.
+transnetv2-pytorch

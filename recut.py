@@ -259,7 +259,7 @@ def _run_ffmpeg(command):
 
 def perform_recut(*, input_path, segments, output_dir, clean_name,
                   reframe=False, output_format="mp4", captions_transcript=None,
-                  burn_captions=True, runner=None):
+                  burn_captions=True, runner=None, crop_overrides=None):
     """Render a recut clip. Returns (served_filename, clean_filename).
 
     - ``input_path``/``segments``: the file to cut from and the times ON THAT
@@ -270,6 +270,10 @@ def perform_recut(*, input_path, segments, output_dir, clean_name,
       ``virtual_transcript``); when given and non-empty, captions are burned
       onto a ``subtitled_<ts>_`` derivative, preserving the invariant that
       the clean file stays clean for later re-styling.
+    - ``crop_overrides``: scene index -> crop centre (fraction of source
+      width, or {"x": f, "y": f}) for scenes the user framed by hand.
+      Source path only; the canonical file is already cropped so its
+      framing can no longer be changed. The CUT is never touched.
     """
     # The uuid token keeps two same-second saves of one clip from writing (and
     # then serving) the same filename; the timestamp keeps "newest derived
@@ -285,7 +289,7 @@ def perform_recut(*, input_path, segments, output_dir, clean_name,
 
         if reframe:
             from main import process_video_to_vertical  # heavy — lazy
-            if not process_video_to_vertical(work_path, out_path):
+            if not process_video_to_vertical(work_path, out_path, crop_overrides=crop_overrides):
                 raise RuntimeError("reframe failed on the recut clip")
             # process_video_to_vertical writes a fresh layout sidecar itself.
         else:
